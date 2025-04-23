@@ -127,18 +127,19 @@ Here are the related files:
 
 ### Quick Start (with a disk index of DiskANN)
 
-You only need to [build an in-memory index](#build-indexes-for-pipeann-and-diskann) (<10min for billion-scale datasets).
+You only need to [build an in-memory index](#build-in-memory-index-for-pipeann) (<10min for billion-scale datasets).
 
 Then, PipeANN is ready! An example on SIFT100M:
 ```bash
+bash ./build.sh
 # build/tests/search_disk_index <data_type> <index_prefix> <nthreads> <I/O pipeline width (max for PipeANN)> <query file> <truth file> <top-K> <result output prefix> <similarity> <search_mode (2 for PipeANN)> <L of in-memory index> <Ls for on-disk index> 
 build/tests/search_disk_index uint8 /mnt/nvme2/indices/bigann/100m 1 32 /mnt/nvme/data/bigann/bigann_query.bbin /mnt/nvme/data/bigann/100M_gt.bin 10 l2 2 10 10 10 10 15 20 25 30 35 40 45 50 55 60 65
 ```
 
-DiskANN and Starling are also supported.
+DiskANN and Starling are also supported within this repository.
 We also implement DiskANN (best-first search) with a simple inter-query scheduling, called coro search.
 
-You could use these baselines by building the corresponding index as below, then change the `search_mode` parameter from `2` (for PipeANN) to `1` (for Starling), `0` (for DiskANN), or `3` (for coro search).
+You could use these baselines by building the corresponding index as below, and then change the `search_mode` parameter from `2` (for PipeANN) to `1` (for Starling), `0` (for DiskANN), or `3` (for coro search).
 
 ### Hardware Configuration
 
