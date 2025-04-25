@@ -26,7 +26,8 @@ To verify that everything is prepared, you can run a hello-world example that ve
 bash scripts/hello_world.sh
 ```
 
-You could get similar output as below. Note that the QPS, latency, and Recall might be slightly differ.
+This script runs the binary compiled by `tests/search_disk_index.cpp`, which calls `pipe_search` in `src/v2/pipe_search.cpp` (the core logic of PipeANN lies here) for vector search.
+You could get a similar output as below. Note that the QPS, latency, and Recall might differ slightly.
 ```
 NOTE: this is a hello-world example for PipeANN. It searches top-10 on SIFT100M dataset.
 Search parameters: #threads: 1,  beamwidth: 32
