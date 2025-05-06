@@ -133,7 +133,7 @@ You only need to [build an in-memory index](#build-in-memory-index-for-pipeann) 
 Then, PipeANN is ready! An example on SIFT100M:
 ```bash
 bash ./build.sh
-# build/tests/search_disk_index <data_type> <index_prefix> <nthreads> <I/O pipeline width (max for PipeANN)> <query file> <truth file> <top-K> <result output prefix> <similarity> <search_mode (2 for PipeANN)> <L of in-memory index> <Ls for on-disk index> 
+# build/tests/search_disk_index <data_type> <index_prefix> <nthreads> <I/O pipeline width (max for PipeANN)> <query file> <truth file> <top-K> <similarity> <search_mode (2 for PipeANN)> <L of in-memory index> <Ls for on-disk index> 
 build/tests/search_disk_index uint8 /mnt/nvme2/indices/bigann/100m 1 32 /mnt/nvme/data/bigann/bigann_query.bbin /mnt/nvme/data/bigann/100M_gt.bin 10 l2 2 10 10 10 10 15 20 25 30 35 40 45 50 55 60 65
 ```
 
@@ -176,17 +176,39 @@ bash ./build.sh
 
 ### Prepare the Datasets
 
-First, download the datasets: 
+#### Download the Datasets
+
 * SIFT100M and SIFT1B from [BIGANN](http://corpus-texmex.irisa.fr/);
 * DEEP1B using [deep1b_gt repository](https://github.com/matsui528/deep1b_gt) (Thanks, matsui528!);
 * SPACEV100M and SPACEV1B from [SPTAG](https://github.com/microsoft/SPTAG).
 
 If the datasets follow `ivecs` or `fvecs` format, you could transfer them into `bin` format using:
 ```bash
-build/tests/utils/bvecs_to_bin bigann_base.bvecs bigann.bin # for byte vecs (SIFT, SPACEV), bigann_base.bvecs -> bigann.bin
+build/tests/utils/bvecs_to_bin bigann_base.bvecs bigann.bin # for byte vecs (SIFT), bigann_base.bvecs -> bigann.bin
 build/tests/utils/fvecs_to_bin base.fvecs deep.bin # for float vecs (DEEP) base.fvecs -> deep.bin
+build/tests/utils/ivecs_to_bin idx_1000M.ivecs idx_1000M.ibin # for int vecs (SIFT groundtruth) idx_1000M.ivecs -> idx_1000M.ibin
 ```
-We need `bin` format for `base`, `query`, and `groundtruth`.
+
+We need `bin` for `base`, `query`, and `groundtruth`.
+
+The SPACEV1B dataset is divided into several sub-files in SPTAG. You could follow [SPTAG SPACEV1B](https://github.com/microsoft/SPTAG/tree/main/datasets/SPACEV1B) for how to read the dataset.
+To concatenate them, just save the dataset's numpy `array` to `bin` format (the following Python code might be used).
+
+```py
+# bin format:
+# | 4 bytes for num_vecs | 4 bytes for vector dimension (e.g., 100 for SPACEV) | flattened vectors |
+def bin_write(vectors, filename):
+    with open(filename, 'wb') as f:
+        num_vecs, vector_dim = vectors.shape
+        f.write(struct.pack('<i', num_vecs))
+        f.write(struct.pack('<i', vector_dim))
+        f.write(vectors.tobytes())
+```
+
+The dataset should contain a ground truth file for its full set.
+Some datasets also contain the ground truth of subsets (first $k$ vectors). For example, SIFT100M's (the first 100M vectors of SIFT1B) ground truth could be found in `idx_100M.ivecs` of SIFT1B dataset.
+
+#### Prepare the 100M Subsets
 
 To select the 100M subsets, use `change_pts` (for `bin`) and `pickup_vecs.py` (in the `deep1b_gt` repository, for `fvecs`).
 ```bash
@@ -196,24 +218,21 @@ mv /mnt/nvme/data/bigann/bigann.bin100000000 /mnt/nvme/data/bigann/100M.bbin
 
 # for DEEP, assume that the dataset is in fvecs format.
 python pickup_vecs.py --src ../base.fvecs --dst ../100M.fvecs --topk 100000000
+# If DEEP is already in fbin format, change_pts also works.
 
 # for SPACEV, assume that the dataset is concatenated into a huge file vectors.bin
 build/tests/change_pts int8 /mnt/nvme/data/SPACEV1B/vectors.bin 100000000
 mv /mnt/nvme/data/SPACEV1B/vectors.bin100000000 /mnt/nvme/data/SPACEV1B/100M.bin
 ```
 
-Then, use `compute_groundtruth` to calculate the ground truths of 100M subsets. (DEEP100M's ground truth is calculated by the repository).
+Then, use `compute_groundtruth` to calculate the ground truths of 100M subsets. (DEEP100M's ground truth could be calculated using deep1b_gt).
 
-
-Take SIFT100M as an example:
+Take SIFT100M as an example (in fact, its ground truth could also be found in SIFT1B):
 ```bash
 # for SIFT100M, assume that the dataset is at /mnt/nvme/data/bigann/100M.bbin, the query is at /mnt/nvme/data/bigann/bigann_query.bbin 
 # output: /mnt/nvme/data/bigann/100M_gt.bin
 build/tests/utils/compute_groundtruth uint8 /mnt/nvme/data/bigann/100M.bbin /mnt/nvme/data/bigann/bigann_query.bbin 1000 /mnt/nvme/data/bigann/100M_gt.bin
 ```
-
-The full set's ground truth could be found in the dataset.
-
 
 ### Build On-Disk Index for PipeANN and DiskANN
 
