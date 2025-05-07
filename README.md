@@ -137,10 +137,13 @@ bash ./build.sh
 build/tests/search_disk_index uint8 /mnt/nvme2/indices/bigann/100m 1 32 /mnt/nvme/data/bigann/bigann_query.bbin /mnt/nvme/data/bigann/100M_gt.bin 10 l2 2 10 10 10 10 15 20 25 30 35 40 45 50 55 60 65
 ```
 
-DiskANN and Starling are also supported within this repository.
-We also implement DiskANN (best-first search) with a simple inter-query scheduling, called coro search.
+Besides [PipeANN](#quick-start-with-a-disk-index-of-diskann) (`src/v2/pipe_search.cpp`), this repository also supports:
 
-You could use these baselines by building the corresponding index as below, and then change the `search_mode` parameter from `2` (for PipeANN) to `1` (for Starling), `0` (for DiskANN), or `3` (for coro search).
+* [DiskANN](https://github.com/microsoft/DiskANN/tree/main/src), an on-disk graph-based index using best-first search (`src/v2/beam_search.cpp`).
+* [Starling](https://github.com/zilliztech/starling), which reorders the on-disk index for reduced I/O amplification (`src/v2/page_search.cpp`).
+* **CoroSearch**, which enhances CPU utilization and throughput by **inter-query scheduling** when processing multiple requests simultaneously (`src/v2/coro_search.cpp`).
+
+To use these baselines, you should first build the corresponding index as below, and then change the `search_mode` parameter from `2` (for PipeANN) to `1` (for Starling), `0` (for DiskANN), or `3` (for CoroSearch).
 
 ### Hardware Configuration
 
@@ -282,11 +285,20 @@ The output in-memory index should reside in three files: `100m_mem.index`, `100m
 
 ### Build Indexes for Starling
 
-First, build the [on-disk index](#build-on-disk-index-for-pipeann-and-diskann) and [in-memory index](#build-in-memory-index-for-pipeann).
+#### Step 1: Reorder the Index
 
-Then, refer to [Starling](https://github.com/zilliztech/starling) for how to reorder the index:
+**Method 1 (build an index from scratch):** Directly use `run_benchmark.sh` in [Starling](https://github.com/zilliztech/starling). It generates:
 
-* Refer to `run_benchmark.sh`, run `frequency file`, `graph partition`, and `relayout`. 
+* The reordered on-disk index (`*_disk.index`, for Starling)
+* The original on-disk index (`*_disk_beam_search.index`, for DiskANN and PipeANN).
+* The in-memory index (`*_mem.index`, for PipeANN and Starling).
+
+**Method 2 (reuse previously-built indexes):**
+To re-use the [on-disk index](#build-on-disk-index-for-pipeann-and-diskann) and [in-memory index](#build-in-memory-index-for-pipeann) built for DiskANN and PipeANN, refer to `run_benchmark.sh` in Starling for how to reorder the index:
+
+* Specifically, you should run `frequency file`, `graph partition`, and `relayout` manually. 
+
+#### Step 2: Pad the Reorder Info (partition.bin) for Fast Loading 
 
 After generating the `partition.bin` file, use `build/tests/pad_partition <partition.bin filename>` to generate `partition.bin.aligned`, which pads the partition file for concurrent loading.
 
