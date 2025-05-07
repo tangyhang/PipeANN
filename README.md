@@ -162,7 +162,7 @@ sudo apt install make cmake g++ libaio-dev libgoogle-perftools-dev clang-format 
 ### Build the Repository
 
 
-First, Build `liburing`. The compiled `liburing` library is in its `src` folder.
+First, build `liburing`. The compiled `liburing` library is in its `src` folder.
 
 ```bash
 cd third_party/liburing
@@ -287,13 +287,13 @@ The output in-memory index should reside in three files: `100m_mem.index`, `100m
 
 #### Step 1: Reorder the Index
 
-**Method 1 (build an index from scratch):** Directly use `run_benchmark.sh` in [Starling](https://github.com/zilliztech/starling). It generates:
+*Method 1 (build an index from scratch):* Directly use `run_benchmark.sh` in [Starling](https://github.com/zilliztech/starling). It generates:
 
 * The reordered on-disk index (`*_disk.index`, for Starling)
 * The original on-disk index (`*_disk_beam_search.index`, for DiskANN and PipeANN).
 * The in-memory index (`*_mem.index`, for PipeANN and Starling).
 
-**Method 2 (reuse previously-built indexes):**
+*Method 2 (reuse previously-built indexes):*
 To re-use the [on-disk index](#build-on-disk-index-for-pipeann-and-diskann) and [in-memory index](#build-in-memory-index-for-pipeann) built for DiskANN and PipeANN, refer to `run_benchmark.sh` in Starling for how to reorder the index:
 
 * Specifically, you should run `frequency file`, `graph partition`, and `relayout` manually. 
