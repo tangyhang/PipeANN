@@ -164,7 +164,10 @@ Besides [PipeANN](#quick-start-with-a-disk-index-of-diskann) (`src/v2/pipe_searc
 
 To use these baselines, you should first build the corresponding index as below, and then change the `search_mode` parameter from `2` (for PipeANN) to `1` (for Starling), `0` (for DiskANN), or `3` (for CoroSearch).
 
-## Start from Scratch
+## Start from Scratch (Environment Setup)
+
+This section introduces how to install the dependencies, build PipeANN, and prepare the indexes for PipeANN and its baselines.
+After these steps, you could run the benchmark scripts above by modifying hard-coded index and dataset paths (similar to [Quick Start](#quick-start-with-a-disk-index-of-diskann)).
 
 ### Hardware Configuration
 
