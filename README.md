@@ -124,9 +124,7 @@ Here are the related files:
 └── 1B_pq_pivots.bin # PQ pivots
 ```
 
-## Environment Setup
-
-### Quick Start (with a disk index of DiskANN)
+## Quick Start (with a disk index of DiskANN)
 
 First, install the dependencies (as in [Software Configuration](#software-configuration)) and [Build the Repository](#build-the-repository).
 
@@ -165,6 +163,8 @@ Besides [PipeANN](#quick-start-with-a-disk-index-of-diskann) (`src/v2/pipe_searc
 * **CoroSearch**, which enhances CPU utilization and throughput by **inter-query scheduling** when processing multiple requests simultaneously (`src/v2/coro_search.cpp`).
 
 To use these baselines, you should first build the corresponding index as below, and then change the `search_mode` parameter from `2` (for PipeANN) to `1` (for Starling), `0` (for DiskANN), or `3` (for CoroSearch).
+
+## Start from Scratch
 
 ### Hardware Configuration
 
