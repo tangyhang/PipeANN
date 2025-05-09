@@ -40,19 +40,43 @@ add_compile_options(-g -O3 -march=native)
 message("Additional definitions: " $ENV{ADDITIONAL_DEFINITIONS})
 
 # check for AVX512 and AVX2, add the corresponding definitions.
+# First, for the compiler.
 include(CheckCXXCompilerFlag)
 check_cxx_compiler_flag("-mavx512f" COMPILER_SUPPORTS_AVX512F)
 check_cxx_compiler_flag("-mavx2" COMPILER_SUPPORTS_AVX2)
 
-if(COMPILER_SUPPORTS_AVX512F)
-    message(STATUS "Compiler supports -mavx512f. Enabling AVX512F.")
+# Then, for the runtime.
+set(CPU_SUPPORTS_AVX512 FALSE)
+set(CPU_SUPPORTS_AVX2 FALSE)
+try_run(
+	RUN_RESULT
+	COMPILE_RESULT
+	"${CMAKE_BINARY_DIR}"
+	SOURCES "${PROJECT_SOURCE_DIR}/tests/test_cpu.cpp"
+	COMPILE_OUTPUT_VARIABLE COMPILE_OUT
+	RUN_OUTPUT_VARIABLE RUN_OUT
+)
+
+if(COMPILE_RESULT AND RUN_RESULT EQUAL 3) # AVX512 + AVX2
+	set(CPU_SUPPORTS_AVX512 TRUE)
+	message(STATUS "CPU supports AVX512")
+elseif(COMPILE_RESULT AND RUN_RESULT EQUAL 1) # AVX2
+	set(CPU_SUPPORTS_AVX2 TRUE)
+	message(STATUS "CPU supports AVX2")
+else()
+	message(STATUS "CPU does not support AVX512 or detection failed")
+endif()
+
+if(COMPILER_SUPPORTS_AVX512F AND CPU_SUPPORTS_AVX512)
+    message(STATUS "Compiler and CPU supports -mavx512f. Enabling AVX512F.")
 	add_definitions(-DUSE_AVX512)
-elseif(COMPILER_SUPPORTS_AVX2)
-	message(STATUS "Compiler supports -mavx2. Enabling AVX2.")
+elseif(COMPILER_SUPPORTS_AVX2 AND CPU_SUPPORTS_AVX2)
+	message(STATUS "Compiler and CPU supports -mavx2. Enabling AVX2.")
 	add_definitions(-DUSE_AVX2)
 else()
-    message(STATUS "Compiler does not support -mavx512f and -mavx2.")
+    message(STATUS "Compiler or CPU do not support -mavx512f and -mavx2.")
 endif()
+
 
 add_definitions(
 	$ENV{ADDITIONAL_DEFINITIONS}
