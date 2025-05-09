@@ -25,16 +25,16 @@ add_executable(reset_bin reset_bin.cpp)
 target_link_libraries(reset_bin ${PROJECT_NAME} aio)
 
 add_executable(tag_to_partition tag_to_partition.cpp)
-target_link_libraries(tag_to_partition ${PROJECT_NAME} jemalloc aio)
+target_link_libraries(tag_to_partition ${PROJECT_NAME} aio)
 
 add_executable(convert_spann_tag convert_spann_tag.cpp)
-target_link_libraries(convert_spann_tag ${PROJECT_NAME} jemalloc aio)
+target_link_libraries(convert_spann_tag ${PROJECT_NAME} aio)
 
 add_executable(search_disk_index search_disk_index.cpp)
-target_link_libraries(search_disk_index ${PROJECT_NAME} jemalloc aio)
+target_link_libraries(search_disk_index ${PROJECT_NAME} aio)
 
 add_executable(search_disk_index_mem search_disk_index_mem.cpp)
-target_link_libraries(search_disk_index_mem ${PROJECT_NAME} jemalloc aio)
+target_link_libraries(search_disk_index_mem ${PROJECT_NAME} aio)
 
 add_executable(pad_partition pad_partition.cpp)
 target_link_libraries(pad_partition ${PROJECT_NAME} aio)
