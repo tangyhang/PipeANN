@@ -155,6 +155,7 @@ namespace diskann {
     }
 
     void populate_chunk_distances_nt(const T *query_vec, float *dist_vec) {
+#ifdef USE_AVX512
       memset(dist_vec, 0, 256 * n_chunks * sizeof(float));
       // chunk wise distance computation
       for (_u64 chunk = 0; chunk < n_chunks; chunk++) {
@@ -175,6 +176,10 @@ namespace diskann {
           }
         }
       }
+#else
+      // TODO: for non-AVX512 machines, do non-temporal population.
+      return populate_chunk_distances(query_vec, dist_vec);
+#endif
     }
 
     // computes PQ distance between comp_src and comp_dsts in efficient manner
