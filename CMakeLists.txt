@@ -39,6 +39,21 @@ add_compile_options(-g -O3 -march=native)
 
 message("Additional definitions: " $ENV{ADDITIONAL_DEFINITIONS})
 
+# check for AVX512 and AVX2, add the corresponding definitions.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-mavx512f" COMPILER_SUPPORTS_AVX512F)
+check_cxx_compiler_flag("-mavx2" COMPILER_SUPPORTS_AVX2)
+
+if(COMPILER_SUPPORTS_AVX512F)
+    message(STATUS "Compiler supports -mavx512f. Enabling AVX512F.")
+	add_definitions(-DUSE_AVX512)
+elseif(COMPILER_SUPPORTS_AVX2)
+	message(STATUS "Compiler supports -mavx2. Enabling AVX2.")
+	add_definitions(-DUSE_AVX2)
+else()
+    message(STATUS "Compiler does not support -mavx512f and -mavx2.")
+endif()
+
 add_definitions(
 	$ENV{ADDITIONAL_DEFINITIONS}
 	# optimizations.
