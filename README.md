@@ -10,7 +10,7 @@ Should there be any questions, please **contact the authors in HotCRP** (or GitH
 We have already set up the environment for AE reviewers on the provided platform.
 Please see HotCRP for how to connect to it.
 
-If you want to build from scratch on your platform, please refer to [Environment Setup](#environment-setup).
+If you want to build from scratch on your platform, please refer to [Quick Start](#quick-start-with-a-disk-index-of-diskann) (for those who have on-disk indexes of DiskANN) or [Environment Setup](#start-from-scratch-environment-setup) (for those who start from scratch).
 
 ### Hello-World Example (Artifact Functional, eta: 1 minute)
 
@@ -126,11 +126,13 @@ Here are the related files:
 
 ## Quick Start (with a disk index of DiskANN)
 
-First, install the dependencies (as in [Software Configuration](#software-configuration)) and [Build the Repository](#build-the-repository).
+For those who have built on-disk indexes of DiskANN, enabling PipeANN only requires two quick steps (<15min).
 
-Then, you only need to [build an in-memory index](#build-in-memory-index-for-pipeann) (<10min for billion-scale datasets).
+* First, install the dependencies (as in [Software Configuration](#software-configuration)) and [Build the Repository](#build-the-repository).
 
-After that, PipeANN is ready! An example for SIFT100M on Ubuntu 22.04:
+* Second, you only need to [build an in-memory index](#build-in-memory-index-for-pipeann) (<10min for billion-scale datasets).
+
+Then, PipeANN is ready! An example for SIFT100M on Ubuntu 22.04:
 
 ```bash
 # For Ubuntu 22.04, first install the dependencies:
