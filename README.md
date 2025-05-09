@@ -132,7 +132,7 @@ First, install the dependencies (as in [Software Configuration](#software-config
 
 Then, you only need to [build an in-memory index](#build-in-memory-index-for-pipeann) (<10min for billion-scale datasets).
 
-After that, PipeANN is ready! An example on SIFT100M (on Ubuntu 22.04):
+After that, PipeANN is ready! An example for SIFT100M on Ubuntu 22.04:
 
 ```bash
 # For Ubuntu 22.04, first install the dependencies:
@@ -153,9 +153,9 @@ export DATA_PATH=/mnt/nvme/data/bigann/100M.bbin
 build/tests/utils/gen_random_slice uint8 ${DATA_PATH} ${INDEX_PREFIX}_SAMPLE_RATE_0.01 0.01
 build/tests/build_memory_index uint8 ${INDEX_PREFIX}_SAMPLE_RATE_0.01_data.bin ${INDEX_PREFIX}_SAMPLE_RATE_0.01_ids.bin ${INDEX_PREFIX}_mem.index 0 0 32 64 1.2 24 l2
 
-# Search the on-disk index. Modify the index_prefix, query, and ground_truth beforehand.
+# Search the on-disk index. Modify the query and ground_truth path beforehand.
 # build/tests/search_disk_index <data_type> <index_prefix> <nthreads> <I/O pipeline width (max for PipeANN)> <query file> <truth file> <top-K> <similarity> <search_mode (2 for PipeANN)> <L of in-memory index> <Ls for on-disk index> 
-build/tests/search_disk_index uint8 /mnt/nvme2/indices/bigann/100m 1 32 /mnt/nvme/data/bigann/bigann_query.bbin /mnt/nvme/data/bigann/100M_gt.bin 10 l2 2 10 10 10 10 15 20 25 30 35 40 45 50 55 60 65
+build/tests/search_disk_index uint8 ${INDEX_PREFIX} 1 32 /mnt/nvme/data/bigann/bigann_query.bbin /mnt/nvme/data/bigann/100M_gt.bin 10 l2 2 10 10 10 10 15 20 25 30 35 40 45 50 55 60 65
 ```
 
 Besides [PipeANN](#quick-start-with-a-disk-index-of-diskann) (`src/v2/pipe_search.cpp`), this repository also supports:
