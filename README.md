@@ -239,7 +239,7 @@ Some datasets also contain the ground truth of subsets (first $k$ vectors). For 
 
 #### Prepare the 100M Subsets
 
-To select the 100M subsets, use `change_pts` (for `bin`) and `pickup_vecs.py` (in the `deep1b_gt` repository, for `fvecs`).
+To generate the 100M subsets (SIFT100M, SPACEV100M, and DEEP100M) using the 1B datasets, use `change_pts` (for `bin`) and `pickup_vecs.py` (in the `deep1b_gt` repository, for `fvecs`).
 ```bash
 # for SIFT, assume that the dataset is converted into bigann.bin
 build/tests/change_pts uint8 /mnt/nvme/data/bigann/bigann.bin 100000000
