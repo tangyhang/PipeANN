@@ -14,8 +14,6 @@
 #include <algorithm>
 #include <stdexcept>
 
-#include "simd_utils.h"
-
 extern bool Avx2SupportedCPU;
 
 namespace diskann {

@@ -7,7 +7,6 @@
 #include <immintrin.h>
 #endif
 
-#include "simd_utils.h"
 #include <cosine_similarity.h>
 #include <iostream>
 

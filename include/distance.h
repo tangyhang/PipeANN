@@ -4,7 +4,6 @@
 #pragma once
 
 #include "windows_customizations.h"
-#include "simd_utils.h"
 #include <cosine_similarity.h>
 #include <iostream>
 
