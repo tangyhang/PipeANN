@@ -11,6 +11,11 @@ class LinuxAlignedFileReader : public AlignedFileReader {
   FileHandle file_desc;
   void *bad_ctx = nullptr;
 
+#ifdef USE_AIO
+  tsl::robin_map<std::thread::id, void *> ctx_map;
+  std::mutex ctx_mut;
+#endif
+
  public:
   LinuxAlignedFileReader();
   ~LinuxAlignedFileReader();
@@ -46,4 +51,6 @@ class LinuxAlignedFileReader : public AlignedFileReader {
   void poll_wait(void *ctx);
 };
 
+#ifndef USE_AIO
 extern int io_uring_flag;
+#endif

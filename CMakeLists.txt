@@ -80,6 +80,7 @@ endif()
 
 add_definitions(
 	$ENV{ADDITIONAL_DEFINITIONS}
+	# -DUSE_AIO # use AIO instead of io uring (better compatibility, worse performance)
 	# optimizations.
 	-DOVERLAP_INIT
 	# -DDYN_PIPE_WIDTH
@@ -99,6 +100,7 @@ link_directories(
 )
 
 link_libraries(
+	aio
 	uring
 )
 # add_compile_options(-fsanitize=address,undefined -lasan -lubsan)

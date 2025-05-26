@@ -46,7 +46,9 @@ namespace diskann {
     // for pipe and coro, we use SQ polling for faster I/O issue.
     // Other search modes use synchronous I/O, so no need for SQ polling.
     this->sq_poll = (search_mode == SearchMode::PIPE_SEARCH || search_mode == SearchMode::CORO_SEARCH);
+#ifndef USE_AIO
     io_uring_flag = this->sq_poll ? IORING_SETUP_SQPOLL : 0;
+#endif
 
     LOG(INFO) << "Using search mode: " << search_mode << ", no_mapping: " << this->no_mapping
               << ", sq_poll: " << this->sq_poll;
