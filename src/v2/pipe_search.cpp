@@ -83,12 +83,12 @@ namespace diskann {
     _u8 *pq_coord_scratch = query_scratch->aligned_pq_coord_scratch;
 
     Timer query_timer;
-    std::vector<Neighbor> retset(4096);
+    std::vector<Neighbor> retset(l_search * 10);
     auto &visited = *(query_scratch->visited);
     unsigned cur_list_size = 0;
 
     std::vector<Neighbor> full_retset;
-    full_retset.reserve(4096);
+    full_retset.reserve(l_search * 10);
 
     // query <-> PQ chunk centers distances
     float *pq_dists = query_scratch->aligned_pqtable_dist_scratch;
