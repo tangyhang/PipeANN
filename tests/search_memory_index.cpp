@@ -1,22 +1,16 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #include <cstring>
 #include <iomanip>
 #include <omp.h>
 #include <set>
 #include <string.h>
 
-#ifndef _WINDOWS
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
-#endif
 
 #include "aux_utils.h"
 #include "index.h"
-#include "memory_mapper.h"
 #include "utils.h"
 
 template<typename T>
@@ -42,9 +36,9 @@ int search_memory_index(int argc, char **argv) {
   _u32 num_threads = (_u32) std::atoi(argv[arg_no++]);
   std::string distance_metric(argv[arg_no++]);
 
-  diskann::Metric m = (distance_metric == "cosine" ? diskann::Metric::COSINE : diskann::Metric::L2);
+  pipeann::Metric m = (distance_metric == "cosine" ? pipeann::Metric::COSINE : pipeann::Metric::L2);
 
-  if (distance_metric != "l2" && m == diskann::Metric::L2) {
+  if (distance_metric != "l2" && m == pipeann::Metric::L2) {
     std::cout << "Not processing metric: '" << distance_metric << "'. Setting to default (L2)" << std::endl;
   }
 
@@ -57,7 +51,7 @@ int search_memory_index(int argc, char **argv) {
   }
 
   if (Lvec.size() == 0) {
-    diskann::cout << "No valid Lsearch found. Lsearch must be at least recall_at." << std::endl;
+    std::cout << "No valid Lsearch found. Lsearch must be at least recall_at." << std::endl;
     return -1;
   }
 
@@ -66,37 +60,37 @@ int search_memory_index(int argc, char **argv) {
             << " is single file: " << single_index_file << " query file: " << query_bin
             << " truthset file: " << truthset_bin << " K: " << recall_at << " num threads: " << num_threads
             << " save prefix: " << result_output_prefix
-            << " similarity metric: " << (m == diskann::Metric::COSINE ? "cosine" : "l2") << " first L: " << Lvec[0]
+            << " similarity metric: " << (m == pipeann::Metric::COSINE ? "cosine" : "l2") << " first L: " << Lvec[0]
             << std::endl;
 
-  diskann::load_aligned_bin<T>(query_bin, query, query_num, query_dim, query_aligned_dim);
+  pipeann::load_aligned_bin<T>(query_bin, query, query_num, query_dim, query_aligned_dim);
 
   if (file_exists(truthset_bin)) {
-    diskann::load_truthset(truthset_bin, gt_ids, gt_dists, gt_num, gt_dim, &gt_tags);
+    pipeann::load_truthset(truthset_bin, gt_ids, gt_dists, gt_num, gt_dim, &gt_tags);
     if (gt_num != query_num) {
-      diskann::cout << "Error. Mismatch in number of queries and ground truth data" << std::endl;
+      std::cout << "Error. Mismatch in number of queries and ground truth data" << std::endl;
     }
     calc_recall_flag = true;
   }
 
-  diskann::cout.setf(std::ios_base::fixed, std::ios_base::floatfield);
-  diskann::cout.precision(2);
+  std::cout.setf(std::ios_base::fixed, std::ios_base::floatfield);
+  std::cout.precision(2);
 
-  diskann::Index<T, uint32_t> index(m, query_dim, max_points, dynamic_index, single_index_file, dynamic_index);
+  pipeann::Index<T, uint32_t> index(m, query_dim, max_points, dynamic_index, single_index_file, dynamic_index);
   index.load(memory_index_file.c_str());
 
   tsl::robin_set<uint32_t> active_tags;
   index.get_active_tags(active_tags);
 
-  diskann::cout << "Index loaded" << std::endl;
+  std::cout << "Index loaded" << std::endl;
 
-  diskann::Parameters paras;
+  pipeann::Parameters paras;
   std::string recall_string = "Recall@" + std::to_string(recall_at);
-  diskann::cout << std::setw(4) << "Ls" << std::setw(12) << "QPS " << std::setw(18) << "Mean Latency (ms)"
-                << std::setw(15) << "99.9 Latency" << std::setw(12) << recall_string << std::endl;
-  diskann::cout << "==============================================================="
-                   "==============="
-                << std::endl;
+  std::cout << std::setw(4) << "Ls" << std::setw(12) << "QPS " << std::setw(18) << "Mean Latency (ms)" << std::setw(15)
+            << "99.9 Latency" << std::setw(12) << recall_string << std::endl;
+  std::cout << "==============================================================="
+               "==============="
+            << std::endl;
 
   std::vector<std::vector<uint32_t>> query_result_ids(Lvec.size());
   std::vector<std::vector<float>> query_result_dists(Lvec.size());
@@ -134,7 +128,7 @@ int search_memory_index(int argc, char **argv) {
     float recall = 0;
     if (calc_recall_flag)
 
-      recall = (float) diskann::calculate_recall((_u32) query_num, gt_tags, gt_dists, (_u32) gt_dim,
+      recall = (float) pipeann::calculate_recall((_u32) query_num, gt_tags, gt_dists, (_u32) gt_dim,
                                                  query_result_ids[test_id].data(), (_u32) recall_at, (_u32) recall_at,
                                                  active_tags);
 
@@ -145,35 +139,35 @@ int search_memory_index(int argc, char **argv) {
     }
     mean_latency /= (double) query_num;
 
-    diskann::cout << std::setw(4) << L << std::setw(12) << qps << std::setw(18) << (float) mean_latency << std::setw(15)
-                  << (float) latency_stats[(_u64) (0.999 * (double) query_num)] << std::setw(12) << recall << std::endl;
+    std::cout << std::setw(4) << L << std::setw(12) << qps << std::setw(18) << (float) mean_latency << std::setw(15)
+              << (float) latency_stats[(_u64) (0.999 * (double) query_num)] << std::setw(12) << recall << std::endl;
   }
 
-  diskann::cout << "Done searching. Now saving results " << std::endl;
+  std::cout << "Done searching. Now saving results " << std::endl;
   _u64 test_id = 0;
 
   for (auto L : Lvec) {
     std::string cur_result_path = result_output_prefix + "_" + std::to_string(L) + "_idx_uint32.bin";
-    diskann::save_bin<_u32>(cur_result_path, query_result_ids[test_id].data(), query_num, recall_at);
+    pipeann::save_bin<_u32>(cur_result_path, query_result_ids[test_id].data(), query_num, recall_at);
     test_id++;
   }
 
-  diskann::aligned_free(query);
+  pipeann::aligned_free(query);
   return 0;
 }
 
 int main(int argc, char **argv) {
   if (argc < 13) {
-    diskann::cout << "Usage: " << argv[0]
-                  << " <index_type (float/int8/uint8)>"
-                     " <max_points> <memory_index_path>"
-                     " <dynamic_index (0/1)> <single_file_index (0/1)"
-                     " (must be same as that given while building the index.)>"
-                     " <query_file.bin>  <truthset.bin (use 'null' for none)> "
-                     " <K>  <result_output_prefix> <num_threads> <distance_metric"
-                     " (cosine/l2) case-sensitive>"
-                     " <L1>  [L2] etc. See README for more information on parameters. "
-                  << std::endl;
+    std::cout << "Usage: " << argv[0]
+              << " <index_type (float/int8/uint8)>"
+                 " <max_points> <memory_index_path>"
+                 " <dynamic_index (0/1)> <single_file_index (0/1)"
+                 " (must be same as that given while building the index.)>"
+                 " <query_file.bin>  <truthset.bin (use 'null' for none)> "
+                 " <K>  <result_output_prefix> <num_threads> <distance_metric"
+                 " (cosine/l2) case-sensitive>"
+                 " <L1>  [L2] etc. See README for more information on parameters. "
+              << std::endl;
     exit(-1);
   }
 
@@ -184,5 +178,5 @@ int main(int argc, char **argv) {
   else if (std::string(argv[1]) == std::string("float"))
     search_memory_index<float>(argc, argv);
   else
-    diskann::cout << "Unsupported type. Use float/int8/uint8" << std::endl;
+    std::cout << "Unsupported type. Use float/int8/uint8" << std::endl;
 }

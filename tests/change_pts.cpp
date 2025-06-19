@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #include <omp.h>
 #include <cstring>
 #include <ctime>
@@ -8,11 +5,9 @@
 #include "log.h"
 #include "utils.h"
 
-#ifndef _WINDOWS
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#endif
 
 template<class T>
 void convert(char *path, uint64_t to_pts) {
@@ -24,7 +19,7 @@ void convert(char *path, uint64_t to_pts) {
   LOG(INFO) << "Num points: " << num_points << " Dim: " << dim << " To pts: " << to_pts;
   T *data = new T[to_pts * dim];
   reader.read((char *) data, to_pts * dim * sizeof(T));
-  diskann::save_bin<T>((std::string(path) + std::to_string(to_pts)).c_str(), data, to_pts, dim);
+  pipeann::save_bin<T>((std::string(path) + std::to_string(to_pts)).c_str(), data, to_pts, dim);
 }
 
 int main(int argc, char **argv) {

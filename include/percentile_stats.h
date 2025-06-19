@@ -1,22 +1,10 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
-#include <fstream>
 #include <functional>
-#ifdef _WINDOWS
-#include <numeric>
-#endif
-#include <string>
 #include <vector>
 
-#include "distance.h"
-#include "parameters.h"
-
-namespace diskann {
+namespace pipeann {
   struct QueryStats {
     double total_us = 0;        // total time to process query in micros
     double n_4k = 0;            // # of 4kB reads
@@ -59,4 +47,4 @@ namespace diskann {
     }
     return avg / ((double) len);
   }
-}  // namespace diskann
+}  // namespace pipeann

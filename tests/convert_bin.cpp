@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #include <omp.h>
 #include <cstring>
 #include <ctime>
@@ -8,18 +5,16 @@
 #include "log.h"
 #include "utils.h"
 
-#ifndef _WINDOWS
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#endif
 
 template<class T>
 void convert(char *path) {
   T *data;
   size_t num_points, dim;
-  diskann::load_bin<T>(path, data, num_points, dim);
-  diskann::save_bin_sector_aligned<T>(std::string(path) + ".aligned", data, num_points, dim);
+  pipeann::load_bin<T>(path, data, num_points, dim);
+  pipeann::save_bin_sector_aligned<T>(std::string(path) + ".aligned", data, num_points, dim);
 }
 
 int main(int argc, char **argv) {

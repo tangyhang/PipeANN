@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #pragma once
 
 #include <cstddef>
@@ -9,21 +6,16 @@
 #include <limits>
 #include "utils.h"
 
-namespace diskann {
+namespace pipeann {
 
   struct Neighbor {
     unsigned id;
     float distance;
-    float pq_distance;
     bool flag;
     bool visited;
 
     Neighbor() = default;
     Neighbor(unsigned id, float distance, bool f) : id{id}, distance{distance}, flag(f), visited(false) {
-    }
-
-    Neighbor(unsigned id, float distance, float pq_distance, bool f)
-        : id{id}, distance{distance}, pq_distance(pq_distance), flag(f), visited(false) {
     }
 
     inline bool operator<(const Neighbor &other) const {
@@ -34,6 +26,22 @@ namespace diskann {
     }
     inline bool operator>(const Neighbor &other) const {
       return (distance > other.distance) || (distance == other.distance && id > other.id);
+    }
+  };
+
+  template<typename TagT = int>
+  struct NeighborTag {
+    TagT tag;
+    float dist;
+    NeighborTag() = default;
+
+    NeighborTag(TagT tag, float dist) : tag{tag}, dist{dist} {
+    }
+    inline bool operator<(const NeighborTag &other) const {
+      return (dist < other.dist) || (dist == other.dist && tag < other.tag);
+    }
+    inline bool operator==(const NeighborTag &other) const {
+      return (tag == other.tag);
     }
   };
 
@@ -151,4 +159,4 @@ namespace diskann {
     addr[right] = nn;
     return right;
   }
-}  // namespace diskann
+}  // namespace pipeann

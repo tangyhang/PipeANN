@@ -1,14 +1,9 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #pragma once
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 
-#include "logger.h"
-#include "ann_exception.h"
 #include "utils.h"
 
 // sequential cached reads
@@ -39,8 +34,7 @@ class cached_ifstream {
     assert(reader.is_open());
     assert(cacheSize > 0);
     cacheSize = (std::min)(cacheSize, fsize - initial_offset);
-    diskann::cout << "Opened: " << filename.c_str() << ", size: " << fsize << ", cache_size: " << cacheSize
-                  << std::endl;
+    LOG(INFO) << "Opened: " << filename.c_str() << ", size: " << fsize << ", cache_size: " << cacheSize;
     this->cache_size = cacheSize;
     cache_buf = new char[cacheSize];
     //    cache_buf = std::make_unique<char[]>(cacheSize);
@@ -65,8 +59,8 @@ class cached_ifstream {
         stream << "Reading beyond end of file" << std::endl;
         stream << "n_bytes: " << n_bytes << " cached_bytes: " << cached_bytes << " fsize: " << fsize
                << " current pos:" << reader.tellg() << std::endl;
-        diskann::cout << stream.str() << std::endl;
-        throw diskann::ANNException(stream.str(), -1, __FUNCSIG__, __FILE__, __LINE__);
+        LOG(INFO) << stream.str();
+        crash();
       }
       memcpy(read_buf, cache_buf + cur_off, cached_bytes);
 
@@ -116,7 +110,7 @@ class cached_ofstream {
     writer.seekp(initial_offset, writer.beg);
     cache_buf = new char[cache_size];
     fsize = initial_offset;
-    diskann::cout << "Opened: " << filename.c_str() << ", cache_size: " << cache_size << std::endl;
+    LOG(INFO) << "Opened: " << filename.c_str() << ", cache_size: " << cache_size;
   }
 
   ~cached_ofstream() {
@@ -136,7 +130,7 @@ class cached_ofstream {
 
     if (writer.is_open())
       writer.close();
-    diskann::cout << "Finished writing " << fsize << "B" << std::endl;
+    LOG(INFO) << "Finished writing " << fsize << "B";
   }
 
   size_t get_file_size() {

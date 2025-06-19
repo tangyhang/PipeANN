@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #include <omp.h>
 #include <cstring>
 #include <ctime>
@@ -9,11 +6,9 @@
 
 #include "utils.h"
 
-#ifndef _WINDOWS
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#endif
 
 void get_point_num_dim(char *base_data_file, size_t &num_points, size_t &dim) {
   std::ifstream reader(base_data_file, std::ios::binary | std::ios::ate);
@@ -38,9 +33,9 @@ void gen_tags(char *base_data_file, char *index, bool sector_aligned) {
   }
   LOG(INFO) << "Saving tags to " << tag_file;
   if (sector_aligned) {
-    diskann::save_bin_sector_aligned<TagT>((tag_file + ".aligned").c_str(), tags, num_points, 1);
+    pipeann::save_bin_sector_aligned<TagT>((tag_file + ".aligned").c_str(), tags, num_points, 1);
   } else {
-    diskann::save_bin<TagT>(tag_file.c_str(), tags, num_points, 1);
+    pipeann::save_bin<TagT>(tag_file.c_str(), tags, num_points, 1);
   }
 }
 

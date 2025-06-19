@@ -1,12 +1,9 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #pragma once
 #include <sstream>
 #include <typeinfo>
 #include <unordered_map>
 
-namespace diskann {
+namespace pipeann {
 
   class Parameters {
    public:
@@ -77,4 +74,4 @@ namespace diskann {
       return value;
     }
   };
-}  // namespace diskann
+}  // namespace pipeann

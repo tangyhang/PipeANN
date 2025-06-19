@@ -1,9 +1,5 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #include <iostream>
 #include "utils.h"
-#include "logger.h"
 
 void block_convert(std::ifstream &reader, std::ofstream &writer, float *read_buf, float *write_buf, _u64 npts,
                    _u64 ndims) {
@@ -16,7 +12,7 @@ void block_convert(std::ifstream &reader, std::ofstream &writer, float *read_buf
 
 int main(int argc, char **argv) {
   if (argc != 3) {
-    diskann::cout << argv[0] << " input_fvecs output_bin" << std::endl;
+    std::cout << argv[0] << " input_fvecs output_bin" << std::endl;
     exit(-1);
   }
   std::ifstream reader(argv[1], std::ios::binary | std::ios::ate);
@@ -28,11 +24,11 @@ int main(int argc, char **argv) {
   reader.seekg(0, std::ios::beg);
   _u64 ndims = (_u64) ndims_u32;
   _u64 npts = fsize / ((ndims + 1) * sizeof(float));
-  diskann::cout << "Dataset: #pts = " << npts << ", # dims = " << ndims << std::endl;
+  std::cout << "Dataset: #pts = " << npts << ", # dims = " << ndims << std::endl;
 
   _u64 blk_size = 131072;
   _u64 nblks = ROUND_UP(npts, blk_size) / blk_size;
-  diskann::cout << "# blks: " << nblks << std::endl;
+  std::cout << "# blks: " << nblks << std::endl;
   std::ofstream writer(argv[2], std::ios::binary);
   int npts_s32 = (_s32) npts;
   int ndims_s32 = (_s32) ndims;
@@ -43,7 +39,7 @@ int main(int argc, char **argv) {
   for (_u64 i = 0; i < nblks; i++) {
     _u64 cblk_size = std::min(npts - i * blk_size, blk_size);
     block_convert(reader, writer, read_buf, write_buf, cblk_size, ndims);
-    diskann::cout << "Block #" << i << " written" << std::endl;
+    std::cout << "Block #" << i << " written" << std::endl;
   }
 
   delete[] read_buf;

@@ -1,11 +1,7 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #pragma once
-#include <mkl/mkl.h>
-
-#include "common_includes.h"
-#include "utils.h"
+#include <cstdint>
+#include <vector>
+#include <cblas.h>
 
 namespace math_utils {
 

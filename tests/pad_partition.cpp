@@ -1,20 +1,15 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #include <omp.h>
 #include <cstring>
 #include <ctime>
 #include <timer.h>
 #include "log.h"
 
-#include "pq_flash_index.h"
+#include "ssd_index.h"
 #include "utils.h"
 
-#ifndef _WINDOWS
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#endif
 
 int main(int argc, char **argv) {
   if (argc < 2) {
@@ -44,7 +39,7 @@ int main(int argc, char **argv) {
     // Normally: partition_nums (200000) * C (5) for SIFT1M
     part.read((char *) tmp_arr, sizeof(unsigned) * s);
     for (uint32_t j = s; j < C; ++j) {
-      tmp_arr[j] = diskann::PQFlashIndex<uint8_t>::kInvalidID;
+      tmp_arr[j] = pipeann::SSDIndex<uint8_t>::kInvalidID;
     }
     out_part.write((char *) &s, sizeof(unsigned));
     out_part.write((char *) tmp_arr, sizeof(unsigned) * C);

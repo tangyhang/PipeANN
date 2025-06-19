@@ -1,43 +1,70 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
-# Licensed under the MIT license.
+cmake_minimum_required(VERSION 3.0)
+project(pipeann)
 
-if(MSVC)
-	cmake_minimum_required(VERSION 3.15)
-else()
-	cmake_minimum_required(VERSION 3.0)
-endif()
 set(CMAKE_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-# add_subdirectory(graph_partition)
+# set(CMAKE_C_COMPILER_LAUNCHER ccache)
+# set(CMAKE_CXX_COMPILER_LAUNCHER ccache)
 
-#set(CMAKE_USER_MAKE_RULES_OVERRIDE "${CMAKE_CURRENT_LIST_DIR}/CompilerOptions.cmake")
-if(MSVC)
-	set(CMAKE_CXX_COMPILER $ENV{VCToolsInstallDir}/bin/Hostx64/x64/cl.exe)
-	set(CMAKE_CXX_LINK_EXECUTABLE $ENV{VCToolsInstallDir}/bin/Hostx64/x64/link.exe)
-else()
-	set(CMAKE_CXX_COMPILER g++)
-endif()
-
-project(diskann)
 include_directories(
 	${PROJECT_SOURCE_DIR}/include 
 	${PROJECT_SOURCE_DIR}/include/tsl/include 
-	${PROJECT_SOURCE_DIR}/include/dll 
-	${PROJECT_SOURCE_DIR}/include/ols
 )
 
 add_compile_options(
+	-fopenmp 
+	-fopenmp-simd
+	-Wall
+	-Wextra
+	-Wfatal-errors
 	-Wno-class-memaccess
 	-Wno-unused-variable
+	-Wno-unused-parameter
 	-Wno-unused-but-set-variable
 )
-
-# default build type set to release
-# if(NOT CMAKE_BUILD_TYPE)
-set(CMAKE_BUILD_TYPE Release)
-add_compile_options(-g -O3 -march=native)
+add_compile_options(-g -O3 -march=native -mtune=native -ftree-vectorize -funroll-loops)
 
 message("Additional definitions: " $ENV{ADDITIONAL_DEFINITIONS})
+add_definitions(
+	$ENV{ADDITIONAL_DEFINITIONS}
+	-DNDEBUG
+	# -DUSE_AIO
+	# -DIN_PLACE_RECORD_UPDATE # disable design #1
+	# -DDIRECT_READ_CC # disable opt #1.1
+	# -DBG_IO_THREAD # enable opt #1.2
+	# -DDELTA_PRUNING # enable opt #2
+
+	# -DNO_POLLUTE_ORIGINAL
+
+	# optimizations.
+	# -DREAD_ONLY_TESTS
+	# -DNO_MAPPING # starling: must disable this!
+	-DOVERLAP_INIT
+	-DDYN_PIPE_WIDTH
+	
+	# policy.
+	# -DSTATIC_POLICY
+
+	# unoptimizations.
+	# -DNAIVE_PIPE
+)
+
+include_directories(
+	${PROJECT_SOURCE_DIR}/third_party/liburing/include
+)
+link_directories(
+	${PROJECT_SOURCE_DIR}/third_party/liburing/lib
+)
+
+link_libraries(
+	aio
+	uring
+	jemalloc
+)
+# add_compile_options(-fsanitize=address,undefined -lasan -lubsan)
+# add_link_options(-fsanitize=address,undefined)
+# add_compile_options(-fsanitize=undefined -lubsan)
+# add_link_options(-fsanitize=undefined)
 
 # check for AVX512 and AVX2, add the corresponding definitions.
 # First, for the compiler.
@@ -77,39 +104,6 @@ else()
     message(STATUS "Compiler or CPU do not support -mavx512f and -mavx2.")
 endif()
 
-
-add_definitions(
-	$ENV{ADDITIONAL_DEFINITIONS}
-	# -DUSE_AIO # use AIO instead of io uring (better compatibility, worse performance)
-	# optimizations.
-	-DOVERLAP_INIT
-	# -DDYN_PIPE_WIDTH
-	
-	# policy.
-	# -DSTATIC_POLICY
-
-	# unoptimizations.
-	# -DNAIVE_PIPE
-)
-
-include_directories(
-	${PROJECT_SOURCE_DIR}/third_party/liburing/src/include
-)
-link_directories(
-	${PROJECT_SOURCE_DIR}/third_party/liburing/src
-)
-
-link_libraries(
-	aio
-	uring
-)
-# add_compile_options(-fsanitize=address,undefined -lasan -lubsan)
-# add_link_options(-fsanitize=address,undefined)
-# add_compile_options(-fsanitize=undefined -lubsan)
-# add_link_options(-fsanitize=undefined)
-# endif()
-
-
 #OpenMP
 find_package(OpenMP)
 if (OPENMP_FOUND)
@@ -119,74 +113,16 @@ else()
     message(FATAL_ERROR "No OpenMP support")
 endif()
 
-
-function(checkEnvAndSetLocalVar env_var msg local_var)
-	if (NOT EXISTS "$ENV{${env_var}}" )
-		message (FATAL_ERROR ${msg})
-	else()
-		if ($ENV{${env_var}} MATCHES "\\$"  OR $ENV{${env_var}} MATCHES "/$" )
-			set(${local_var} $ENV{${env_var}} PARENT_SCOPE)
-		else()
-			message(STATUS "Appending trailing backslash to ${env_var}")
-			set(${local_var} "$ENV{${env_var}}\\" PARENT_SCOPE)
-		endif()
-	endif()
-endfunction()
-
 	
-
-#MKL Config
-if (MSVC)
-	checkEnvAndSetLocalVar("INTEL_ROOT" "Please install Intel MKL libraries and set the env variable INTEL_ROOT to the intel software directory. Should be similar to: C:\\Program Files (x86)\\IntelSWTools\\compilers_and_libraries\\windows\\. " "INTEL_ROOT")
-	set(MKL_ROOT ${INTEL_ROOT}/mkl)
-	add_compile_options(/arch:AVX2 /Qpar)
-	link_libraries("${INTEL_ROOT}/mkl/lib/intel64/mkl_core_dll.lib" "${INTEL_ROOT}/mkl/lib/intel64/mkl_rt.lib"  "${INTEL_ROOT}/mkl/lib/intel64/mkl_intel_thread_dll.lib" "${INTEL_ROOT}/compiler/lib/intel64/libiomp5md.lib"  "${INTEL_ROOT}/mkl/lib/intel64/mkl_intel_ilp64_dll.lib" "${INTEL_ROOT}/mkl/lib/intel64/mkl_sequential_dll.lib")
-	checkEnvAndSetLocalVar("BOOST_ROOT" "Please install Boost (1.71 or greater) from www.boost.org and set the env var BOOST_ROOT to the boost directory." "BOOST_ROOT")
-
+find_package(BLAS)
+if(BLAS_FOUND)
+    message(STATUS "BLAS found")
+    link_libraries(${BLAS_LIBRARIES})
 else()
-	find_package(MKL)
-        add_compile_options(-m64 -Wl,--no-as-needed)
-	link_libraries(mkl_intel_ilp64 mkl_intel_thread mkl_core iomp5 pthread m dl rt)
-	link_directories(${INTEL_ROOT}/lib/intel64 ${MKL_ROOT}/lib/intel64)
-endif()
-
-add_definitions(-DMKL_ILP64)
-include_directories(include ${INTEL_ROOT}/include ${MKL_ROOT}/include ${BOOST_ROOT})
-
-
-#Main compiler/linker settings 
-if(MSVC)
-	#language options
-	add_compile_options(/permissive- /openmp:experimental /Zc:wchar_t /Zc:twoPhase- /Zc:forScope /Zc:inline /WX- /std:c++14 /Gd /W3 /MP /Zi /FC /nologo /diagnostics:classic) 
-	#code generation options
-	add_compile_options(/Qpar /fp:fast /Zp8 /fp:except- /EHsc /GS- /Gm- /Gy )
-	#optimization options
-	add_compile_options(/Ot /Oy /Oi)
-	#path options
-	#add_compile_options(/Fdx64/Release/vc141.pdb /Fox64/Release/)
-	add_definitions(-DUSE_ACCELERATED_PQ -D_WINDOWS -DNOMINMAX -DUNICODE)
-	
-	set(CMAKE_SHARED_LIBRARY_CXX_LINK_FLAGS "/MANIFEST /MACHINE:X64 /DEBUG:FULL /LTCG:incremental /NXCOMPAT /DYNAMICBASE /OPT:REF /SUBSYSTEM:CONSOLE /MANIFESTUAC:\"level='asInvoker' uiAccess='false'\"")
-	set(CMAKE_EXECUTABLE_CXX_LINK_FLAGS "/MANIFEST /MACHINE:X64 /DEBUG:FULL /LTCG:incremental /NXCOMPAT /DYNAMICBASE /OPT:REF /SUBSYSTEM:CONSOLE /MANIFESTUAC:\"level='asInvoker' uiAccess='false'\"")
-
-	set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /D_DEBUG")
-	set(CMAKE_SHARED_LIBRARY_CXX_LINK_FLAGS_DEBUG "${CMAKE_SHARED_LIBRARY_CXX_LINK_FLAGS_DEBUG} /DEBUG")
-
-	set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG ${PROJECT_SOURCE_DIR}/x64/Debug)
-	set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${PROJECT_SOURCE_DIR}/x64/Debug)
-	set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG ${PROJECT_SOURCE_DIR}/x64/Debug)
-
-	set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE ${PROJECT_SOURCE_DIR}/x64/Release)
-	set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${PROJECT_SOURCE_DIR}/x64/Release)
-	set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${PROJECT_SOURCE_DIR}/x64/Release)
-else()
-	set(ENV{TCMALLOC_LARGE_ALLOC_REPORT_THRESHOLD} 500000000000)
-    #set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -DDEBUG -O0 -fsanitize=address -fsanitize=leak -fsanitize=undefined")
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -DDEBUG -Wall -Wextra")
-	set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Ofast -DNDEBUG -march=native -mtune=native -ftree-vectorize")
-	add_compile_options(-march=native -Wall -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free -fopenmp -fopenmp-simd -funroll-loops -Wfatal-errors -DUSE_ACCELERATED_PQ)
+    message(FATAL_ERROR "BLAS is required but was not found.")
 endif()
 
 add_subdirectory(src)
 add_subdirectory(tests)
 add_subdirectory(tests/utils)
+# add_subdirectory(python)

@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #include <omp.h>
 #include <algorithm>
 #include <chrono>
@@ -31,10 +28,10 @@ int aux_main(char **argv) {
 
 int main(int argc, char **argv) {
   if (argc != 5) {
-    diskann::cout << argv[0]
-                  << " data_type [float/int8/uint8] base_bin_file "
-                     "sample_output_prefix sampling_probability"
-                  << std::endl;
+    std::cout << argv[0]
+              << " data_type [float/int8/uint8] base_bin_file "
+                 "sample_output_prefix sampling_probability"
+              << std::endl;
     exit(-1);
   }
 
@@ -45,6 +42,6 @@ int main(int argc, char **argv) {
   } else if (std::string(argv[1]) == std::string("uint8")) {
     aux_main<uint8_t>(argv);
   } else
-    diskann::cout << "Unsupported type. Use float/int8/uint8." << std::endl;
+    std::cout << "Unsupported type. Use float/int8/uint8." << std::endl;
   return 0;
 }

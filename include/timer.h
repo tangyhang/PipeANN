@@ -1,9 +1,6 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #include <chrono>
 
-namespace diskann {
+namespace pipeann {
   class Timer {
     typedef std::chrono::high_resolution_clock _clock;
     std::chrono::time_point<_clock> check_point;
@@ -20,4 +17,4 @@ namespace diskann {
       return std::chrono::duration_cast<std::chrono::microseconds>(_clock::now() - check_point).count();
     }
   };
-}  // namespace diskann
+}  // namespace pipeann

@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #pragma once
 #include <fcntl.h>
 #include <algorithm>
@@ -12,27 +9,15 @@
 #include <string>
 #include <memory>
 #include <random>
-#include <set>
 #include <sstream>
-#ifdef __APPLE__
-#else
 #include <malloc.h>
-#endif
-
-#ifdef _WINDOWS
-#include <Windows.h>
-typedef HANDLE FileHandle;
-#else
 #include <unistd.h>
+#include <sys/stat.h>
+
 typedef int FileHandle;
-#endif
 
 #include "distance.h"
-#include "logger.h"
 #include "log.h"
-#include "ann_exception.h"
-#include "common_includes.h"
-#include "windows_customizations.h"
 
 // taken from
 // https://github.com/Microsoft/BLAS-on-flash/blob/master/include/utils.h
@@ -60,27 +45,29 @@ typedef int16_t _s16;
 typedef uint8_t _u8;
 typedef int8_t _s8;
 
+/* Used to replace exception. */
+inline void crash() {
+  // #ifndef NDEBUG
+  __builtin_trap();
+  // #endif
+}
+
 static inline bool file_exists(const std::string &name, bool dirCheck = false) {
   int val;
-#ifndef _WINDOWS
   struct stat buffer;
   val = stat(name.c_str(), &buffer);
-#else
-  struct _stat64 buffer;
-  val = _stat64(name.c_str(), &buffer);
-#endif
 
-  diskann::cout << " Stat(" << name.c_str() << ") returned: " << val << std::endl;
+  LOG(INFO) << " Stat(" << name.c_str() << ") returned: " << val;
   if (val != 0) {
     switch (errno) {
       case EINVAL:
-        diskann::cout << "Invalid argument passed to stat()" << std::endl;
+        LOG(INFO) << "Invalid argument passed to stat()";
         break;
       case ENOENT:
-        diskann::cout << "File " << name.c_str() << " does not exist" << std::endl;
+        LOG(INFO) << "File " << name.c_str() << " does not exist";
         break;
       default:
-        diskann::cout << "Unexpected error in stat():" << errno << std::endl;
+        LOG(INFO) << "Unexpected error in stat():" << errno;
         break;
     }
     return false;
@@ -90,38 +77,6 @@ static inline bool file_exists(const std::string &name, bool dirCheck = false) {
   }
 }
 
-inline std::string getTempFilePath(const std::string &workingDir, const std::string &suffix) {
-  std::string retFile;
-#ifdef _WINDOWS
-  char temp[MAX_PATH];
-
-  do {
-    if (!tmpnam_s(temp, MAX_PATH) == 0) {
-      throw diskann::ANNException("Could not create temporary name.", -1);
-    }
-
-    std::string tempFile(temp);
-    memset(temp, 0, MAX_PATH);
-    // GetTempPath returns number of chars in path incl a trailing '\'
-    int numCharsInTempPath = 0;
-    if ((numCharsInTempPath = GetTempPathA(MAX_PATH, temp)) == 0) {
-      throw diskann::ANNException("GetTempPathA failed with error code: ", GetLastError());
-    }
-
-    tempFile.erase(0, numCharsInTempPath);
-    retFile = workingDir + "\\" + tempFile + "_" + suffix;
-  } while (file_exists(retFile));  // To handle the rare case that the file may exist already.
-#else
-  int i = 0;
-  std::string temp = "_temp";
-  do {
-    retFile = workingDir + temp + std::to_string(i) + "_" + suffix;
-    i++;
-  } while (file_exists(retFile));
-#endif
-  return retFile;
-}
-
 inline void open_file_to_write(std::ofstream &writer, const std::string &filename) {
   writer.exceptions(std::ofstream::failbit | std::ofstream::badbit);
   if (!file_exists(filename))
@@ -129,10 +84,8 @@ inline void open_file_to_write(std::ofstream &writer, const std::string &filenam
   else
     writer.open(filename, std::ios::binary | std::ios::in | std::ios::out);
   if (writer.fail()) {
-    diskann::cerr << std::string("Failed to open file") + filename + " for write because " << std::strerror(errno)
-                  << std::endl;
-    throw diskann::ANNException(
-        std::string("Failed to open file ") + filename + " for write because: " + std::strerror(errno), -1);
+    LOG(ERROR) << std::string("Failed to open file") + filename + " for write because " << std::strerror(errno);
+    crash();
   }
 }
 
@@ -143,7 +96,7 @@ inline _u64 get_file_size(const std::string &fname) {
     reader.close();
     return end_pos;
   } else {
-    diskann::cerr << "Could not open file: " << fname << std::endl;
+    LOG(ERROR) << "Could not open file: " << fname;
     return 0;
   }
 }
@@ -152,10 +105,9 @@ inline int delete_file(const std::string &fileName) {
   if (file_exists(fileName)) {
     auto rc = ::remove(fileName.c_str());
     if (rc != 0) {
-      diskann::cerr << "Could not delete file: " << fileName
-                    << " even though it exists. This might indicate a permissions issue. "
-                       "If you see this message, please contact the diskann team."
-                    << std::endl;
+      LOG(ERROR) << "Could not delete file: " << fileName
+                 << " even though it exists. This might indicate a permissions issue. "
+                    "If you see this message, please contact the pipeann team.";
     }
     return rc;
   } else {
@@ -163,49 +115,25 @@ inline int delete_file(const std::string &fileName) {
   }
 }
 
-namespace diskann {
+namespace pipeann {
   static const size_t MAX_SIZE_OF_STREAMBUF = 2LL * 1024 * 1024 * 1024;
 
   enum Metric { L2 = 0, INNER_PRODUCT = 1, FAST_L2 = 2, PQ = 3, COSINE = 4 };
 
-  DISKANN_DLLEXPORT float calc_recall_set_tags(unsigned num_queries, unsigned *gold_std, unsigned dim_gs,
-                                               unsigned *our_results_tags, unsigned dim_or, unsigned recall_at,
-                                               unsigned subset_size, std::string gt_tag_filename,
-                                               std::string current_tag_filename);
+  float calc_recall_set_tags(unsigned num_queries, unsigned *gold_std, unsigned dim_gs, unsigned *our_results_tags,
+                             unsigned dim_or, unsigned recall_at, unsigned subset_size, std::string gt_tag_filename,
+                             std::string current_tag_filename);
 
   inline void alloc_aligned(void **ptr, size_t size, size_t align) {
     *ptr = nullptr;
     assert(IS_ALIGNED(size, align));
-#ifndef _WINDOWS
     *ptr = ::aligned_alloc(align, size);
-#else
-    *ptr = ::_aligned_malloc(size, align);  // note the swapped arguments!
-#endif
-    assert(*ptr != nullptr);
-  }
-
-  inline void realloc_aligned(void **ptr, size_t size, size_t align) {
-    assert(IS_ALIGNED(size, align));
-#ifdef _WINDOWS
-    *ptr = ::_aligned_realloc(*ptr, size, align);
-#endif
-    assert(*ptr != nullptr);
-  }
-
-  inline void realloc_aligned(void **ptr, void **ptr_new, size_t old_size, size_t new_size, size_t align) {
-    assert(IS_ALIGNED(new_size, align));
-#ifndef _WINDOWS
-    alloc_aligned((void **) &ptr_new, new_size, align);
-    memcpy(*ptr_new, *ptr, old_size);
-    ::free(*ptr);
-    *ptr = *ptr_new;
-#endif
     assert(*ptr != nullptr);
   }
 
   inline void check_stop(std::string arnd) {
     int brnd;
-    diskann::cout << arnd << std::endl;
+    LOG(INFO) << arnd;
     std::cin >> brnd;
   }
 
@@ -213,11 +141,7 @@ namespace diskann {
     if (ptr == nullptr) {
       return;
     }
-#ifndef _WINDOWS
     free(ptr);
-#else
-    ::_aligned_free(ptr);
-#endif
   }
 
   inline void GenRandom(std::mt19937 &rng, unsigned *addr, unsigned size, unsigned N) {
@@ -252,19 +176,6 @@ namespace diskann {
     get_bin_metadata_impl(reader, nrows, ncols, offset);
   }
   // get_bin_metadata functions END
-
-  template<typename T>
-  inline std::string getValues(T *data, size_t num) {
-    std::stringstream stream;
-    stream << "[";
-    for (size_t i = 0; i < num; i++) {
-      stream << std::to_string(data[i]) << ",";
-    }
-    stream << "]" << std::endl;
-
-    return stream.str();
-  }
-
   // load_bin functions START
   template<typename T>
   inline void load_bin_impl(std::basic_istream<char> &reader, T *&data, size_t &npts, size_t &dim,
@@ -277,7 +188,7 @@ namespace diskann {
     npts = (unsigned) npts_i32;
     dim = (unsigned) dim_i32;
 
-    diskann::cout << "Metadata: #pts = " << npts << ", #dims = " << dim << "..." << std::endl;
+    LOG(INFO) << "Metadata: #pts = " << npts << ", #dims = " << dim << "...";
 
     data = new T[npts * dim];
     reader.read((char *) data, npts * dim * sizeof(T));
@@ -294,7 +205,7 @@ namespace diskann {
     npts = (unsigned) npts_i32;
     dim = (unsigned) dim_i32;
 
-    diskann::cout << "Metadata: #pts = " << npts << ", #dims = " << dim << "..." << std::endl;
+    LOG(INFO) << "Metadata: #pts = " << npts << ", #dims = " << dim << "...";
 
     data.resize(npts * dim);
     reader.read((char *) (data.data()), npts * dim * sizeof(T));
@@ -307,7 +218,7 @@ namespace diskann {
     // cached_ifstream reader(bin_file, read_blk_size);
     // size_t actual_file_size = reader.get_file_size();
     // END OLS
-    diskann::cout << "Reading bin file " << bin_file.c_str() << " ..." << std::endl;
+    LOG(INFO) << "Reading bin file " << bin_file.c_str() << " ...";
     std::ifstream reader(bin_file, std::ios::binary | std::ios::ate);
     reader.seekg(0);
 
@@ -322,7 +233,7 @@ namespace diskann {
     // cached_ifstream reader(bin_file, read_blk_size);
     // size_t actual_file_size = reader.get_file_size();
     // END OLS
-    diskann::cout << "Reading bin file " << bin_file.c_str() << " ..." << std::endl;
+    LOG(INFO) << "Reading bin file " << bin_file.c_str() << " ...";
     std::ifstream reader(bin_file, std::ios::binary | std::ios::ate);
     reader.seekg(0);
 
@@ -338,7 +249,7 @@ namespace diskann {
   //   // cached_ifstream reader(bin_file, read_blk_size);
   //   // size_t actual_file_size = reader.get_file_size();
   //   // END OLS
-  //   diskann::cout << "Reading bin file " << bin_file.c_str() << " ..." << std::endl;
+  //   LOG(INFO) << "Reading bin file " << bin_file.c_str() << " ...";
   //   std::ifstream reader(bin_file, std::ios::binary | std::ios::ate);
   //   uint64_t fsize = reader.tellg();
   //   reader.seekg(0);
@@ -371,35 +282,10 @@ namespace diskann {
     return bytes_written;
   }
 
-  template<typename T>
-  inline void load_bin_sector_aligned(const std::string &bin_file, std::vector<T> &data, size_t &npts, size_t &dim,
-                                      size_t offset = 0) {
-    std::string bin_file_name = bin_file + ".aligned";
-    LOG(INFO) << "Reading sector-aligned bin file " << bin_file_name.c_str() << " ...";
-    if (!file_exists(bin_file_name)) {
-      LOG(ERROR) << "File " << bin_file_name << " does not exist.";
-      throw diskann::ANNException("File does not exist", -1, __FUNCSIG__, __FILE__, __LINE__);
-    }
-    std::ifstream reader(bin_file_name, std::ios::binary | std::ios::ate);
-
-    reader.seekg(offset, reader.beg);
-    int npts_i32, dim_i32;
-    reader.read((char *) &npts_i32, sizeof(int));
-    reader.read((char *) &dim_i32, sizeof(int));
-    npts = (unsigned) npts_i32;
-    dim = (unsigned) dim_i32;
-
-    LOG(INFO) << "Metadata: #pts = " << npts << ", #dims = " << dim << "...";
-
-    data.resize(npts * dim);
-    reader.seekg(offset + METADATA_SIZE, reader.beg);
-    reader.read((char *) (data.data()), npts * dim * sizeof(T));
-  }
-
   inline void load_truthset(const std::string &bin_file, uint32_t *&ids, float *&dists, size_t &npts, size_t &dim,
                             uint32_t **tags = nullptr) {
     std::ifstream reader(bin_file, std::ios::binary);
-    diskann::cout << "Reading truthset file " << bin_file.c_str() << "..." << std::endl;
+    LOG(INFO) << "Reading truthset file " << bin_file.c_str() << "...";
     size_t actual_file_size = get_file_size(bin_file);
 
     int npts_i32, dim_i32;
@@ -408,7 +294,7 @@ namespace diskann {
     npts = (unsigned) npts_i32;
     dim = (unsigned) dim_i32;
 
-    diskann::cout << "Metadata: #pts = " << npts << ", #dims = " << dim << "..." << std::endl;
+    LOG(INFO) << "Metadata: #pts = " << npts << ", #dims = " << dim << "...";
 
     int truthset_type = -1;  // 1 means truthset has ids and distances, 2 means
                              // only ids, -1 is error
@@ -434,8 +320,8 @@ namespace diskann {
                 "followed by npts*ngt distance values; actual size: "
              << actual_file_size << ", expected: " << expected_file_size_with_dists << " or "
              << expected_file_size_just_ids;
-      diskann::cout << stream.str();
-      throw diskann::ANNException(stream.str(), -1, __FUNCSIG__, __FILE__, __LINE__);
+      LOG(INFO) << stream.str();
+      crash();
     }
 
     ids = new uint32_t[npts * dim];
@@ -464,18 +350,17 @@ namespace diskann {
     std::ofstream writer;
     open_file_to_write(writer, filename);
 
-    diskann::cout << "Writing bin: " << filename.c_str() << std::endl;
+    LOG(INFO) << "Writing bin: " << filename.c_str();
     writer.seekp(offset, writer.beg);
     int npts_i32 = (int) npts, ndims_i32 = (int) ndims;
     size_t bytes_written = npts * ndims * sizeof(T) + 2 * sizeof(uint32_t);
     writer.write((char *) &npts_i32, sizeof(int));
     writer.write((char *) &ndims_i32, sizeof(int));
-    diskann::cout << "bin: #pts = " << npts << ", #dims = " << ndims << ", size = " << bytes_written << "B"
-                  << std::endl;
+    LOG(INFO) << "bin: #pts = " << npts << ", #dims = " << ndims << ", size = " << bytes_written << "B";
 
     writer.write((char *) data, npts * ndims * sizeof(T));
     writer.close();
-    diskann::cout << "Finished writing bin." << std::endl;
+    LOG(INFO) << "Finished writing bin.";
     return bytes_written;
   }
 
@@ -492,8 +377,7 @@ namespace diskann {
     npts = (unsigned) npts_i32;
     dim = (unsigned) dim_i32;
     rounded_dim = ROUND_UP(dim, 8);
-    diskann::cout << "Metadata: #pts = " << npts << ", #dims = " << dim << ", aligned_dim = " << rounded_dim << "..."
-                  << std::flush;
+    LOG(INFO) << "Metadata: #pts = " << npts << ", #dims = " << dim << ", aligned_dim = " << rounded_dim << "...";
     size_t allocSize = npts * rounded_dim * sizeof(T);
     alloc_aligned(((void **) &data), allocSize, 8 * sizeof(T));
 
@@ -501,13 +385,13 @@ namespace diskann {
       reader.read((char *) (data + i * rounded_dim), dim * sizeof(T));
       memset(data + i * rounded_dim + dim, 0, (rounded_dim - dim) * sizeof(T));
     }
-    diskann::cout << " Allocated " << allocSize << "bytes and copied data " << std::endl;
+    LOG(INFO) << " Allocated " << allocSize << "bytes and copied data ";
   }
 
   template<typename T>
   inline void load_aligned_bin(const std::string &bin_file, T *&data, size_t &npts, size_t &dim, size_t &rounded_dim,
                                size_t offset = 0) {
-    diskann::cout << "Reading bin file " << bin_file << " at offset " << offset << "..." << std::flush;
+    LOG(INFO) << "Reading bin file " << bin_file << " at offset " << offset << "...";
     std::ifstream reader(bin_file, std::ios::binary | std::ios::ate);
     reader.seekg(0);
 
@@ -553,8 +437,7 @@ namespace diskann {
   inline void copy_aligned_data_from_file(const std::string bin_file, T *&data, size_t &npts, size_t &dim,
                                           const size_t &rounded_dim, size_t offset = 0) {
     if (data == nullptr) {
-      diskann::cout << "Memory was not allocated for " << data << " before calling the load function. Exiting..."
-                    << std::endl;
+      LOG(INFO) << "Memory was not allocated for " << data << " before calling the load function. Exiting...";
       exit(-1);
     }
     std::ifstream reader(bin_file, std::ios::binary);
@@ -589,11 +472,11 @@ namespace diskann {
   // NOTE: Implementation in utils.cpp.
   void block_convert(std::ofstream &writr, std::ifstream &readr, float *read_buf, _u64 npts, _u64 ndims);
 
-  DISKANN_DLLEXPORT void normalize_data_file(const std::string &inFileName, const std::string &outFileName);
+  void normalize_data_file(const std::string &inFileName, const std::string &outFileName);
 
   template<typename T>
   Distance<T> *get_distance_function(Metric m);
-}  // namespace diskann
+}  // namespace pipeann
 
 struct PivotContainer {
   PivotContainer() = default;
@@ -613,75 +496,5 @@ struct PivotContainer {
   float piv_dist;
 };
 
-inline bool validate_file_size(const std::string &name) {
-  std::ifstream in(std::string(name), std::ios::binary);
-  in.seekg(0, in.end);
-  size_t actual_file_size = in.tellg();
-  in.seekg(0, in.beg);
-  size_t expected_file_size;
-  in.read((char *) &expected_file_size, sizeof(uint64_t));
-  if (actual_file_size != expected_file_size) {
-    diskann::cerr << "Error loading" << name
-                  << ". Expected "
-                     "size (metadata): "
-                  << expected_file_size << ", actual file size : " << actual_file_size << ". Exiting." << std::endl;
-    in.close();
-    return false;
-  }
-  in.close();
-  return true;
-}
-
 template<typename T>
-diskann::Distance<T> *get_distance_function(diskann::Metric m);
-
-extern bool AvxSupportedCPU;
-extern bool Avx2SupportedCPU;
-
-#ifdef _WINDOWS
-#include <intrin.h>
-#include <Psapi.h>
-
-inline size_t getMemoryUsage() {
-  PROCESS_MEMORY_COUNTERS_EX pmc;
-  GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *) &pmc, sizeof(pmc));
-  return pmc.PrivateUsage;
-}
-
-inline std::string getWindowsErrorMessage(DWORD lastError) {
-  char *errorText;
-  FormatMessageA(
-      // use system message tables to retrieve error text
-      FORMAT_MESSAGE_FROM_SYSTEM
-          // allocate buffer on local heap for error text
-          | FORMAT_MESSAGE_ALLOCATE_BUFFER
-          // Important! will fail otherwise, since we're not
-          // (and CANNOT) pass insertion parameters
-          | FORMAT_MESSAGE_IGNORE_INSERTS,
-      NULL,  // unused with FORMAT_MESSAGE_FROM_SYSTEM
-      lastError, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-      (LPSTR) &errorText,  // output
-      0,                   // minimum size for output buffer
-      NULL);               // arguments - see note
-
-  return errorText != nullptr ? std::string(errorText) : std::string();
-}
-
-inline void printProcessMemory(const char *message) {
-  PROCESS_MEMORY_COUNTERS counters;
-  HANDLE h = GetCurrentProcess();
-  GetProcessMemoryInfo(h, &counters, sizeof(counters));
-  diskann::cout << message
-                << " [Peaking Working Set size: " << counters.PeakWorkingSetSize * 1.0 / (1024.0 * 1024 * 1024)
-                << "GB Working set size: " << counters.WorkingSetSize * 1.0 / (1024.0 * 1024 * 1024)
-                << "GB Private bytes " << counters.PagefileUsage * 1.0 / (1024 * 1024 * 1024) << "GB]" << std::endl;
-}
-#else
-
-// need to check and change this
-inline bool avx2Supported() {
-  return true;
-}
-inline void printProcessMemory(const char *) {
-}
-#endif
+pipeann::Distance<T> *get_distance_function(pipeann::Metric m);

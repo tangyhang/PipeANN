@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #pragma once
 
 #include "utils.h"
@@ -11,7 +8,7 @@
 #define NUM_PQ_CENTROIDS 256
 #define NUM_PQ_OFFSETS 5
 
-namespace diskann {
+namespace pipeann {
   template<typename T>
   class FixedChunkPQTable {
     // data_dim = n_chunks * chunk_size;
@@ -57,40 +54,40 @@ namespace diskann {
       _u64 nr, nc;
       std::unique_ptr<_u64[]> file_offset_data;
       _u64 *file_offset_data_raw;
-      diskann::load_bin_impl<_u64>(reader, file_offset_data_raw, nr, nc, offset);
+      pipeann::load_bin_impl<_u64>(reader, file_offset_data_raw, nr, nc, offset);
       file_offset_data.reset(file_offset_data_raw);
 
       if (nr != NUM_PQ_OFFSETS) {
         LOG(ERROR) << "Pivot offset incorrect, # offsets = " << nr << ", but expecting " << NUM_PQ_OFFSETS;
-        throw diskann::ANNException("Error reading pq_pivots.", -1, __FUNCSIG__, __FILE__, __LINE__);
+        crash();
       }
 
-      diskann::load_bin_impl<float>(reader, tables, nr, nc, file_offset_data[0] + offset);
+      pipeann::load_bin_impl<float>(reader, tables, nr, nc, file_offset_data[0] + offset);
 
       if ((nr != NUM_PQ_CENTROIDS)) {
         LOG(ERROR) << "Num centers incorrect, centers = " << nr << " but expecting " << NUM_PQ_CENTROIDS;
-        throw diskann::ANNException("Error reading pq_pivots.", -1, __FUNCSIG__, __FILE__, __LINE__);
+        crash();
       }
 
       this->ndims = nc;
-      diskann::load_bin_impl<float>(reader, centroid, nr, nc, file_offset_data[1] + offset);
+      pipeann::load_bin_impl<float>(reader, centroid, nr, nc, file_offset_data[1] + offset);
 
       if ((nr != this->ndims) || (nc != 1)) {
         LOG(ERROR) << "Centroid file dim incorrect: row " << nr << ", col " << nc << " expecting " << this->ndims;
-        throw diskann::ANNException("Error reading centroid data.", -1, __FUNCSIG__, __FILE__, __LINE__);
+        crash();
       }
 
-      diskann::load_bin_impl<uint32_t>(reader, rearrangement, nr, nc, file_offset_data[2] + offset);
+      pipeann::load_bin_impl<uint32_t>(reader, rearrangement, nr, nc, file_offset_data[2] + offset);
       if ((nr != this->ndims) || (nc != 1)) {
         LOG(ERROR) << "Rearrangement incorrect: row " << nr << ", col " << nc << " expecting " << this->ndims;
-        throw diskann::ANNException("Error reading re-arrangement data.", -1, __FUNCSIG__, __FILE__, __LINE__);
+        crash();
       }
 
-      diskann::load_bin_impl<uint32_t>(reader, chunk_offsets, nr, nc, file_offset_data[3] + offset);
+      pipeann::load_bin_impl<uint32_t>(reader, chunk_offsets, nr, nc, file_offset_data[3] + offset);
 
       if (nr != (uint64_t) num_chunks + 1 || nc != 1) {
         LOG(ERROR) << "Chunk offsets: nr=" << nr << ", nc=" << nc << ", expecting nr=" << num_chunks + 1 << ", nc=1.";
-        throw diskann::ANNException("Error reading chunk offsets.", -1, __FUNCSIG__, __FILE__, __LINE__);
+        crash();
       }
 
       this->n_chunks = num_chunks;
@@ -100,7 +97,7 @@ namespace diskann {
 
     void post_load_pq_table() {
       // alloc and compute transpose
-      diskann::alloc_aligned((void **) &tables_T, 256 * ndims * sizeof(float), 64);
+      pipeann::alloc_aligned((void **) &tables_T, 256 * ndims * sizeof(float), 64);
       // tables_T = new float[256 * ndims];
       for (_u64 i = 0; i < 256; i++) {
         for (_u64 j = 0; j < ndims; j++) {
@@ -217,5 +214,5 @@ namespace diskann {
         }
       }
     }
-  };  // namespace diskann
-}  // namespace diskann
+  };  // namespace pipeann
+}  // namespace pipeann

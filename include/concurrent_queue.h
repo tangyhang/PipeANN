@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT license.
-
 #pragma once
 #include <atomic>
 #include <chrono>
@@ -11,7 +8,7 @@
 #include <type_traits>
 #include <unordered_set>
 
-namespace diskann {
+namespace pipeann {
 
   template<typename T>
   class ConcurrentQueue {
@@ -24,9 +21,10 @@ namespace diskann {
     std::mutex pop_mut;
     std::condition_variable push_cv;
     std::condition_variable pop_cv;
-    T null_T;
 
    public:
+    T null_T;  // default value for pop() when queue is empty
+
     ConcurrentQueue() {
     }
 
@@ -76,7 +74,7 @@ namespace diskann {
       } else {
         T ret = this->q.front();
         this->q.pop();
-        // diskann::cout << "thread_id: " << std::this_thread::get_id() << ",
+        // LOG(INFO) << "thread_id: " << std::this_thread::get_id() << ",
         // ctx: "
         // << ret.ctx << "\n";
         lk.unlock();
@@ -111,4 +109,4 @@ namespace diskann {
       this->pop_cv.notify_all();
     }
   };
-}  // namespace diskann
+}  // namespace pipeann

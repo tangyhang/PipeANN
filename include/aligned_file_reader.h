@@ -4,28 +4,22 @@
 
 #include <fcntl.h>
 #include <unistd.h>
-
-#include "query_scratch.h"
+#include "v2/page_cache.h"
+#include "query_buf.h"
 
 #include <malloc.h>
 #include <cstdio>
 
-enum ReaderMRID { kPQ, kSector, kUpdate, kLenReaderMRID };
 class AlignedFileReader {
  public:
-  // returns the thread-specific context
-  // returns (io_context_t)(-1) if thread is not registered
-  virtual void *get_ctx() = 0;
+  // returns the thread-specific io ring.
+  // If not constructed, it will register the thread (using the flag) and return the context.
+  // For io_uring reader, the flag is used to set up the ring (e.g., IORING_SETUP_SQPOLL).
+  // For PipeSearch, we use IO_RING_SETUP_POLL to enable polling.
+  // For all the other algorithms, we use 0 to disable polling.
+  virtual void *get_ctx(int flag = 0) = 0;
 
-  virtual ~AlignedFileReader(){};
-
-  // register thread-id for a context
-  virtual void register_thread() = 0;
-  // de-register thread-id for a context
-  virtual void deregister_thread() = 0;
-  virtual void deregister_all_threads() = 0;
-
-  virtual void register_buf(void *buf, uint64_t buf_size, int mrid) = 0;
+  virtual ~AlignedFileReader() {};
 
   // Open & close ops
   // Blocking calls
@@ -44,10 +38,47 @@ class AlignedFileReader {
   virtual void get_events(void *ctx, int n_ops) = 0;
   */
 
+  virtual void read_alloc(std::vector<IORequest> &read_reqs, void *ctx, std::vector<uint64_t> *page_ref = nullptr) = 0;
+  inline void wbc_write(std::vector<IORequest> &write_reqs, void *ctx, std::vector<uint64_t> *page_ref = nullptr) {
+    // auto locked_reqs = v2::lockReqs(v2::cache.lock_table, write_reqs);
+    for (auto &req : write_reqs) {
+      for (uint64_t i = 0; i < req.len; i += SECTOR_LEN) {
+        v2::cache.put((req.offset + i) / SECTOR_LEN, (uint8_t *) req.buf + i, true);
+      }
+    }
+    // v2::unlockReqs(v2::cache.lock_table, locked_reqs);
+    if (page_ref != nullptr) {
+      for (auto &req : write_reqs) {
+        for (uint64_t i = 0; i < req.len; i += SECTOR_LEN) {
+          page_ref->push_back((req.offset + i) / SECTOR_LEN);
+        }
+      }
+    }
+  }
+  inline void deref(std::vector<uint64_t> *page_ref, void *ctx) {
+#ifndef READ_ONLY_TESTS
+    if (page_ref == nullptr) {
+      return;
+    }
+    for (auto &x : *page_ref) {
+      v2::cache.deref(x);
+    }
+#endif
+  }
+
   virtual void send_io(IORequest &reqs, void *ctx, bool write) = 0;
   virtual void send_io(std::vector<IORequest> &reqs, void *ctx, bool write) = 0;
   // Note that this is not used in update, so no page_ref is adopted (returns n_ios).
+  virtual int send_read_no_alloc(IORequest &req, void *ctx) = 0;
+  virtual int send_read_no_alloc(std::vector<IORequest> &reqs, void *ctx) = 0;
   virtual int poll(void *ctx) = 0;
   virtual void poll_all(void *ctx) = 0;
   virtual void poll_wait(void *ctx) = 0;
+
+ protected:
+  // register thread-id for a context
+  virtual void register_thread(int flag = 0) = 0;
+  // de-register thread-id for a context
+  virtual void deregister_thread() = 0;
+  virtual void deregister_all_threads() = 0;
 };
