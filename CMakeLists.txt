@@ -50,10 +50,10 @@ add_definitions(
 )
 
 include_directories(
-	${PROJECT_SOURCE_DIR}/third_party/liburing/include
+	${PROJECT_SOURCE_DIR}/third_party/liburing/src/include
 )
 link_directories(
-	${PROJECT_SOURCE_DIR}/third_party/liburing/lib
+	${PROJECT_SOURCE_DIR}/third_party/liburing/src
 )
 
 link_libraries(
