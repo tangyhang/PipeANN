@@ -31,7 +31,6 @@ namespace pipeann {
       nthreads = this->max_nthreads;
     }
 
-    QueryBuffer<T> *tdata = this->pop_query_buf(nullptr);
     void *ctx = reader->get_ctx();
 
     while (!bg_tasks.empty()) {
@@ -164,7 +163,7 @@ namespace pipeann {
         if (nhood.size() > this->range) {
           std::vector<float> dists(nhood.size(), 0.0f);
           std::vector<Neighbor> pool(nhood.size());
-          auto &thread_pq_buf = tdata->aligned_pq_coord_scratch;
+          auto &thread_pq_buf = thread_pq_bufs[omp_get_thread_num()];
           compute_pq_dists(id, nhood.data(), dists.data(), (_u32) nhood.size(), thread_pq_buf);
 
           for (uint32_t k = 0; k < nhood.size(); k++) {
@@ -244,8 +243,6 @@ namespace pipeann {
     this->write_metadata_and_pq(in_path_prefix, out_path_prefix, new_npoints, id_map.find(medoid), &new_tags);
     LOG(INFO) << "Write metadata and PQ finished, totally elapsed " << delete_timer.elapsed() / 1e3 << "ms.";
     LOG(INFO) << "Write metadata finished, totally elapsed " << delete_timer.elapsed() / 1e3 << "ms.";
-
-    push_query_buf(tdata);
   }
 
   template<typename T, typename TagT>

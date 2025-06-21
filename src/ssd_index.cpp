@@ -85,6 +85,12 @@ namespace pipeann {
       this->thread_data_queue.push(data);
     }
 
+    for (uint64_t i = 0; i < n_buffers; ++i) {
+      uint8_t *thread_pq_buf;
+      pipeann::alloc_aligned((void **) &thread_pq_buf, 16ul << 20, 256);
+      thread_pq_bufs.push_back(thread_pq_buf);
+    }
+
 #ifndef READ_ONLY_TESTS
     // background thread.
     LOG(INFO) << "Setup " << kBgIOThreads << " background I/O threads for insert...";

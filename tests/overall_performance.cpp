@@ -386,7 +386,7 @@ void update(const std::string &data_bin, const unsigned L_disk, int step, const 
 }
 
 int main(int argc, char **argv) {
-  if (argc < 14) {
+  if (argc < 11) {
     std::cout << "Correct usage: " << argv[0] << " <type[int8/uint8/float]> <data_bin> <L_disk> "
               << " <indice_path> <query_file> <truthset_prefix> <recall@>"
               << " <#beam_width> <step> <Lsearch> <L2>" << std::endl;

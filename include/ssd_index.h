@@ -677,6 +677,7 @@ namespace pipeann {
     // thread-specific scratch
     ConcurrentQueue<QueryBuffer<T> *> thread_data_queue;
     std::vector<QueryBuffer<T> *> thread_data_bufs;  // pre-allocated thread data
+    std::vector<uint8_t *> thread_pq_bufs;           // for merge deletes
     _u64 max_nthreads;
 
     bool load_flag = false;    // already loaded.
