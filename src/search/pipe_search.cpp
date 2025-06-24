@@ -67,7 +67,7 @@ namespace pipeann {
     _u8 *pq_coord_scratch = query_buf->aligned_pq_coord_scratch;
 
     Timer query_timer;
-    std::vector<Neighbor> retset(l_search * 10);
+    std::vector<Neighbor> retset(mem_L + l_search * 10);
     auto &visited = *(query_buf->visited);
     unsigned cur_list_size = 0;
 
@@ -123,8 +123,12 @@ namespace pipeann {
           Neighbor nn(nbor_id, nbor_dist, true);
           // Return position in sorted list where nn inserted
           auto r = InsertIntoPool(retset.data(), cur_list_size, nn);  // may be overflow in retset...
-          if (cur_list_size < l_search)
+          if (cur_list_size < l_search) {
             ++cur_list_size;
+            if (unlikely(cur_list_size >= retset.size())) {
+              retset.resize(2 * cur_list_size);
+            }
+          }
           // nk logs the best position in the retset that was updated due to
           // neighbors of n.
           if (r < nk)

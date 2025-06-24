@@ -13,7 +13,6 @@
 namespace {
   constexpr uint64_t kNoUserData = 0;
   void execute_io(void *context, int fd, std::vector<IORequest> &reqs, uint64_t n_retries = 0, bool write = false) {
-    // break-up requests into chunks of size MAX_EVENTS each
     io_uring *ring = (io_uring *) context;
     while (true) {
       for (uint64_t j = 0; j < reqs.size(); j++) {
@@ -30,16 +29,16 @@ namespace {
       io_uring_cqe *cqe = nullptr;
       bool fail = false;
       for (uint64_t j = 0; j < reqs.size(); j++) {
-        int ret = io_uring_wait_cqe(ring, &cqe);
-        // LOG(INFO) << "Wait CQE ring " << ring << " ret " << ret;
-        if (ret < 0) {
+        int ret = 0;
+        do {
+          ret = io_uring_wait_cqe(ring, &cqe);
+        } while (ret == -EINTR);
+
+        if (ret < 0 || cqe->res < 0) {
           fail = true;
           LOG(ERROR) << "Failed " << strerror(-ret) << " " << ring << " " << j << " " << reqs[j].buf << " "
                      << reqs[j].len << " " << reqs[j].offset;
-          continue;
-        }
-        if (cqe->res < 0) {
-          LOG(ERROR) << "Failed " << strerror(-cqe->res);
+          break;  // CQE broken.
         }
         io_uring_cqe_seen(ring, cqe);
       }
@@ -215,8 +214,11 @@ void LinuxAlignedFileReader::poll_all(void *ctx) {
 void LinuxAlignedFileReader::poll_wait(void *ctx) {
   io_uring *ring = (io_uring *) ctx;
   io_uring_cqe *cqe = nullptr;
-  io_uring_wait_cqe(ring, &cqe);
-  if (cqe->res < 0) {
+  int ret = 0;
+  do {
+    ret = io_uring_wait_cqe(ring, &cqe);
+  } while (ret == -EINTR);
+  if (ret < 0 || cqe->res < 0) {
     LOG(ERROR) << "Failed " << strerror(-cqe->res);
   }
   IORequest *req = (IORequest *) cqe->user_data;

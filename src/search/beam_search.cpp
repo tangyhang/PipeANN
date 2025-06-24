@@ -63,7 +63,7 @@ namespace pipeann {
 
     Timer query_timer, io_timer, cpu_timer;
     std::vector<Neighbor> retset;
-    retset.resize(10 * l_search);
+    retset.resize(mem_L + 10 * l_search);
     tsl::robin_set<_u64> visited(4096);
 
     // re-naming `expanded_nodes_info` to not change rest of the code
@@ -74,12 +74,6 @@ namespace pipeann {
     unsigned cur_list_size = 0;
     auto compute_and_add_to_retset = [&](const unsigned *node_ids, const _u64 n_ids) {
       compute_dists(node_ids, n_ids, dist_scratch);
-
-      // unlikely expand.
-      if (unlikely(cur_list_size + n_ids >= retset.size())) {
-        retset.resize(retset.size() * 1.5);
-      }
-
       for (_u64 i = 0; i < n_ids; ++i) {
         retset[cur_list_size].id = node_ids[i];
         retset[cur_list_size].distance = dist_scratch[i];
@@ -225,6 +219,9 @@ namespace pipeann {
 
             if (cur_list_size < l_search) {
               ++cur_list_size;
+              if (unlikely(cur_list_size >= retset.size())) {
+                retset.resize(2 * cur_list_size);
+              }
             }
 
             if (r < nk)

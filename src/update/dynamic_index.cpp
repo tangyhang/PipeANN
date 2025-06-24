@@ -36,6 +36,9 @@ namespace pipeann {
     if (std::filesystem::exists(prefix_in + "_disk.index.tags")) {
       std::filesystem::copy(prefix_in + "_disk.index.tags", prefix_out + "_disk.index.tags",
                             std::filesystem::copy_options::overwrite_existing);
+    } else {
+      // remove the original tags.
+      std::filesystem::remove(prefix_out + "_disk.index.tags");
     }
     std::filesystem::copy(prefix_in + "_pq_pivots.bin", prefix_out + "_pq_pivots.bin",
                           std::filesystem::copy_options::overwrite_existing);

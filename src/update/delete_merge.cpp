@@ -303,6 +303,10 @@ namespace pipeann {
 
     LOG(INFO) << "Reloading, num_points " << this->num_points << " n_chunks: " << this->n_chunks;
     this->cur_id = this->cur_loc = this->num_points;
+    if (this->num_points % nnodes_per_sector != 0) {
+      this->cur_loc += nnodes_per_sector - (num_points % nnodes_per_sector);
+    }
+
     while (!this->empty_pages.empty()) {
       this->empty_pages.pop();
     }
