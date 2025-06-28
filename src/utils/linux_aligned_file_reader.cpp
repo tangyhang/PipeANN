@@ -103,7 +103,7 @@ void LinuxAlignedFileReader::open(const std::string &fname, bool enable_writes =
   if (enable_create) {
     flags |= O_CREAT;
   }
-  this->file_desc = ::open(fname.c_str(), flags);
+  this->file_desc = ::open(fname.c_str(), flags, 0644);
   // error checks
   assert(this->file_desc != -1);
   //  std::cerr << "Opened file : " << fname << std::endl;
@@ -443,9 +443,6 @@ int LinuxAlignedFileReader::poll(void *ctx) {
     return ret;  // not finished yet.
   }
   if (ret) {
-    if (event.res < 0) {
-      LOG(ERROR) << "Failed " << strerror(-event.res);
-    }
     IORequest *req = (IORequest *) event.data;
     if (req != nullptr) {
       req->finished = true;
@@ -464,9 +461,6 @@ void LinuxAlignedFileReader::poll_all(void *ctx) {
     return;  // not finished yet.
   }
   for (int i = 0; i < ret; i++) {
-    if (evts[i].res < 0) {
-      LOG(ERROR) << "Failed " << strerror(-evts[i].res);
-    }
     IORequest *req = (IORequest *) evts[i].data;
     if (req != nullptr) {
       req->finished = true;
@@ -481,9 +475,6 @@ void LinuxAlignedFileReader::poll_wait(void *ctx) {
   if (ret < 0) {
     LOG(ERROR) << "io_getevents() failed; returned " << ret << ", errno=" << errno << ":" << ::strerror(errno);
     return;  // not finished yet.
-  }
-  if (event.res < 0) {
-    LOG(ERROR) << "Failed " << strerror(-event.res);
   }
   IORequest *req = (IORequest *) event.data;
   if (req != nullptr) {

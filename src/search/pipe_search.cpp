@@ -4,7 +4,6 @@
 #include "ssd_index.h"
 #include <malloc.h>
 #include <algorithm>
-#include "liburing.h"
 
 #include <omp.h>
 #include <chrono>
@@ -17,6 +16,10 @@
 
 #include <unistd.h>
 #include <sys/syscall.h>
+
+#ifndef USE_AIO
+#include "liburing.h"
+#endif
 
 namespace pipeann {
   struct io_t {
@@ -41,7 +44,11 @@ namespace pipeann {
   size_t SSDIndex<T, TagT>::pipe_search(const T *query1, const _u64 k_search, const _u32 mem_L, const _u64 l_search,
                                         TagT *res_tags, float *distances, const _u64 beam_width, QueryStats *stats) {
     QueryBuffer<T> *query_buf = pop_query_buf(query1);
+#ifdef USE_AIO
+    void *ctx = reader->get_ctx();
+#else
     void *ctx = reader->get_ctx(IORING_SETUP_SQPOLL);  // use SQ polling only for pipe search.
+#endif
 
     if (beam_width > MAX_N_SECTOR_READS) {
       LOG(ERROR) << "Beamwidth can not be higher than MAX_N_SECTOR_READS";

@@ -142,7 +142,7 @@ namespace pipeann {
     // update the neighbors
     for (uint32_t i = 0; i < new_nhood.size(); ++i) {
       auto r_sector = node_sector_no(new_nhood[i]);
-      if (page_buf_map.find(r_sector) == nullptr) {
+      if (page_buf_map.find(r_sector) == page_buf_map.end()) {
         LOG(ERROR) << new_nhood[i] << " " << "Sector " << r_sector << " not found in page_buf_map";
         exit(-1);
       }
