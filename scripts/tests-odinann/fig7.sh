@@ -26,5 +26,6 @@ rm /mnt/nvme/indices_upd/deep/100M_shadow1*
 rm /mnt/nvme/indices_upd/deep/100M_merge*
 
 # run SPFresh.
+rm /mnt/nvme2/PipeANN/data/result-deep100m/*
 cd /mnt/nvme2/SPFresh
 bash Script/overall_deep_spfresh.sh |& tee $CWD/data/SPFresh-insertonly-deep.txt

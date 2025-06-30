@@ -26,5 +26,6 @@ rm /mnt/nvme/indices_upd/bigann/100M_shadow1*
 rm /mnt/nvme/indices_upd/bigann/100M_merge*
 
 # run SPFresh.
+rm /mnt/nvme2/PipeANN/data/result-sift100m/*
 cd /mnt/nvme2/SPFresh
 bash Script/overall_sift_spfresh.sh |& tee $CWD/data/SPFresh-insertonly-sift.txt

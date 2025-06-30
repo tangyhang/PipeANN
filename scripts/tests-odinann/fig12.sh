@@ -28,5 +28,6 @@ rm /mnt/nvme/indices_upd/bigann/100M_shadow1*
 rm /mnt/nvme/indices_upd/bigann/100M_merge*
 
 # run SPFresh.
+rm /mnt/nvme2/PipeANN/data/result-change/*
 cd /mnt/nvme2/SPFresh
 bash Script/overall_change_spfresh.sh |& tee $CWD/data/SPFresh-workload-change.txt

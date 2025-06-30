@@ -25,5 +25,6 @@ rm /mnt/nvme/indices_upd/sift1b/800M_shadow*
 rm /mnt/nvme/indices_upd/sift1b/800M_shadow1*
 rm /mnt/nvme/indices_upd/sift1b/800M_merge*
 
+rm /mnt/nvme2/PipeANN/data/result-1b/*
 cd /mnt/nvme2/SPFresh
 bash Script/overall_sift_spfresh_stress.sh |& tee $CWD/data/SPFresh-stress.txt
