@@ -250,7 +250,7 @@ Amazingly, this approach is very likely to succeed.
 # build/tests/gt_update <file> <tot_npts> <batch_npts> <target_topk> <target_dir> <insert_only>
 # /mnt/nvme/data/bigann/truth.bin is the top-1000 for SIFT.
 # insert 100M points in total, each batch contains 1M vectors.
-build/tests/gt_update /mnt/nvme/data/bigann/truth.bin 100000000 1000000 10 /mnt/nvme/indices_upd/bigann_gnd/1B_topk true
+build/tests/gt_update /mnt/nvme/data/bigann/truth.bin 100000000 1000000 10 /mnt/nvme/indices_upd/bigann_gnd/1B_topk 1
 ```
 
 The output files will be stored in `/mnt/nvme/indices_upd/bigann_gnd/1B_topk/gt_{i * batch_npts}.bin`, each `bin` contains the ground truth for `[0, 100M + i*batch_npts)`.
