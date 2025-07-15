@@ -30,7 +30,9 @@ We propose PipeANN, a **low-latency**, **billion-scale**, and **updatable** grap
 
 * SSD: ~700GB for SIFT with 1B vectors, ~900GB for SPACEV with 1.4B vectors.
 
-* OS: Linux kernel supporting `io_uring` (e.g., >= 5.15) delivers best performance. Otherwise, enable `-DUSE_AIO` to use `libaio` instead.
+* OS: Linux kernel supporting `io_uring` (e.g., >= 5.15) delivers best performance. Otherwise, set `USE_AIO` option to `ON` to use `libaio` instead.
+
+* Compiler: `c++17` should be supported.
 
 * Vector dataset: less than 2B vectors to avoid integer overflow, each record size (`vector_size + 4 + 4 * num_neighbors`) is less than 4KB (>= 4KB is supported by search-only workloads but not well-tested, and not supported by updates).
 

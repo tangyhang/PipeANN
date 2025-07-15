@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.0)
 project(pipeann)
 
 set(CMAKE_STANDARD 17)
+option(USE_AIO "Use AIO instead of liburing" OFF)
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # set(CMAKE_C_COMPILER_LAUNCHER ccache)
 # set(CMAKE_CXX_COMPILER_LAUNCHER ccache)
@@ -28,7 +30,6 @@ message("Additional definitions: " $ENV{ADDITIONAL_DEFINITIONS})
 add_definitions(
 	$ENV{ADDITIONAL_DEFINITIONS}
 	-DNDEBUG
-	# -DUSE_AIO
 	# -DIN_PLACE_RECORD_UPDATE # disable design #1
 	# -DDIRECT_READ_CC # disable opt #1.1
 	# -DBG_IO_THREAD # enable opt #1.2
@@ -56,9 +57,16 @@ link_directories(
 	${PROJECT_SOURCE_DIR}/third_party/liburing/src
 )
 
+if(USE_AIO)
+	message(STATUS "Using AIO for asynchronous I/O, compatible but slower.")
+	link_libraries(aio)
+	add_definitions(-DUSE_AIO)
+else()
+	message(STATUS "Using liburing for asynchronous I/O, faster but requires kernel support.")
+	link_libraries(uring)
+endif()
+
 link_libraries(
-	aio
-	uring
 	jemalloc
 )
 # add_compile_options(-fsanitize=address,undefined -lasan -lubsan)

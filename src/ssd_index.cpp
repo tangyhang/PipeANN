@@ -4,7 +4,6 @@
 
 #include <omp.h>
 #include <cmath>
-#include "liburing/io_uring.h"
 #include "parameters.h"
 #include "query_buf.h"
 #include "timer.h"

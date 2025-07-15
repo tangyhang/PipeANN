@@ -349,7 +349,7 @@ void LinuxAlignedFileReader::open(const std::string &fname, bool enable_writes =
   if (enable_create) {
     flags |= O_CREAT;
   }
-  this->file_desc = ::open(fname.c_str(), flags);
+  this->file_desc = ::open(fname.c_str(), flags, 0644);
   // error checks
   assert(this->file_desc != -1);
   //  std::cerr << "Opened file : " << fname << std::endl;
