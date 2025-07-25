@@ -1,16 +1,28 @@
-# PipeANN
+# [FAST'26 Artifact] OdinANN: Direct Insert for Consistently Stable Performance in Billion-Scale Graph-Based Vector Search
 
-PipeANN is a **low-latency, billion-scale, and updatable** graph-based vector store on SSD. Features:
+Welcome to the artifact repository of FAST'26 accepted paper: *OdinANN: Direct Insert for Consistently Stable Performance in Billion-Scale Graph-Based Vector Search*!
+This repository contains the implementation of OdinANN, and scripts to reproduce the experiment results in our paper.
+
+Should there be any questions, please **contact the authors in HotCRP** (or GitHub issue). The authors will respond to each question as soon as possible.
+
+For AE reviewers, please directly refer to [Evaluate the Artifact](#for-reviewers-evaluate-the-artifact).
+We have already set up the environment for AE reviewers on the provided platform.
+Please see HotCRP for how to connect to it.
+
+
+## Overview
+
+We propose PipeANN, a **low-latency**, **billion-scale**, and **updatable** graph-based vector store (vector database) on SSD. Features:
 
 * **Extremely low search latency**: <1ms in billion-scale vectors (top-10, 90% recall), only 1.14x-2.02x of in-memory graph-based index but **>10x** less memory usage (e.g., **40GB** for billion-scale datasets).
 
 * **High search throughput**: 20K QPS in billion-scale vectors (top-10, 90% recall), higher than [DiskANN](https://github.com/microsoft/DiskANN) with `beam_width = 8` (latency-optimal) and [SPANN](https://github.com/microsoft/SPTAG).
 
-* **Efficient vector updates**: `insert` and `delete` are supported with minimal interference with concurrent search (fluctuates only **1.07X**) and reduced memory usage (only **<90GB** for billion-scale datasets).
+* **Efficient vector updates**: `insert` and `delete` are supported with minimal interference with concurrent search (fluctuates only **1.07X**) and reduces memory usage (only **<90GB** for billion-scale datasets).
 
-## Build PipeANN
+## Requirements
 
-### Basic Configurations
+### Configurations
 
 * CPU: X86 and ARM CPUs are tested. SIMD (e.g., AVX2, AVX512) will boost performance.
 
@@ -18,7 +30,7 @@ PipeANN is a **low-latency, billion-scale, and updatable** graph-based vector st
 
 * SSD: ~700GB for SIFT with 1B vectors, ~900GB for SPACEV with 1.4B vectors.
 
-* OS: Linux kernel supporting `io_uring` (e.g., >= 5.15) delivers best performance. Otherwise, set `USE_AIO` option to `ON` to use `libaio` instead. We recommend using `Ubuntu 22.04`, but `Ubuntu 18.04` and `20.04` are also tested (`USE_AIO` option should be enabled).
+* OS: Linux kernel supporting `io_uring` (e.g., >= 5.15) delivers best performance. Otherwise, set `USE_AIO` option to `ON` to use `libaio` instead.
 
 * Compiler: `c++17` should be supported.
 
@@ -26,7 +38,7 @@ PipeANN is a **low-latency, billion-scale, and updatable** graph-based vector st
 
 ### Software Dependencies
 
-For `Ubuntu >= 22.04`, the command to install them:
+For Ubuntu >= 22.04, the command to install them:
 
 ```bash
 sudo apt install make cmake g++ libaio-dev libgoogle-perftools-dev clang-format libboost-all-dev libmkl-full-dev libjemalloc-dev
@@ -255,7 +267,7 @@ Then, this benchmark executes `num_step` steps, each step inserts `vecs_per_step
 Concurrent search with the `Ls` are executed.
 
 
-An example to reproduce the results in OdinANN paper using SIFT100M dataset:
+An example to reproduce the results in OdinANN using SIFT100M dataset:
 
 ```bash
 # build/tests/test_insert_search <type[int8/uint8/float]> <data_bin> <L_disk> <vecs_per_step> <num_steps> <insert_threads> <search_threads> <search_mode> <index_prefix> <query_file> <truthset_prefix> <truthset_l_offset> <recall@> <#beam_width> <search_beam_width> <mem_L> <Lsearch> <L2>
@@ -264,7 +276,7 @@ build/tests/test_insert_search uint8 /mnt/nvme/data/bigann/bigann_200M.bbin 128 
 ```
 
 The `data_bin` should contain all the data (200M vectors in this setup), SIFT1B `bin` could also be used.
-The `search_mode` is set to `0` for best-first search. **If you are evaluating OdinANN, use `2` (PipeANN) instead**.
+The `search_mode` is set to `0` for best-first search.
 We use `L_disk = 128` for 100M-scale datasets and `160` for billion-scale datasets.
 `mem_L` is set to 0, in order to skip using the in-memory index.
 
@@ -280,13 +292,6 @@ An example to reproduce the results in OdinANN using SIFT100M dataset:
 build/tests/overall_performance uint8 /mnt/nvme/data/bigann/bigann_200M.bbin 128 /mnt/nvme/indices_upd/bigann/100M /mnt/nvme/data/bigann/bigann_query.bbin /mnt/nvme/indices_upd/bigann_gnd/500M_topk 10 4 100 20 30
 ```
 
-### Reproduce Results in Our Papers
-
-The scripts we use for evaluation are placed in the `scripts/` directory. For details, please refer to:
-
-* [PipeANN (Search-Only)](./README-PipeANN.md).
-* [OdinANN (Search-Update)](./README-OdinANN.md).
-
 ### Notes
 
 * The index is **not crash-consistent** after updates currently, journaling could be adopted for it.
@@ -296,29 +301,188 @@ The scripts we use for evaluation are placed in the `scripts/` directory. For de
 * For better performance, please select the `search_mode` to `2` (PipeANN) in `test_insert_search`, and set the `search_beam_width` to 32.
 The in-memory index could also be used (but it is immutable during updates).
 
+
+### Other Baselines
+
+* For FreshDiskANN, please refer to [this repo](https://github.com/g4197/FreshDiskANN-baseline).
+
+* For SPFresh, we directly use its original repo. We use the parameters in [SPFresh ini file](https://github.com/SPFresh/SPFresh/blob/main/Script_AE/iniFile/build_SPANN_spacev100m.ini) to build SPANN SIFT100M index. DEEP100M uses `PostingPageLimit=12`, while other configurations remain the same.
+
+
+## For Reviewers: Evaluate the Artifact
+
+We have prepared corresponding scripts to evaluate this artifact. 
+Although this repo is named PipeANN, it is actually an integration of PipeANN and OdinANN.
+
+### Hello-World Example (Artifact Functional, eta: 1 minute)
+
+First, compile OdinANN.
+
+```bash
+bash ./build.sh
+```
+
+To verify that everything is prepared, you can run a hello-world example that verifies OdinANN's functionality, please run the following command:
+
+```bash
+bash scripts/tests-odinann/hello_world.sh
+```
+
+This script runs `test_insert_search`, which inserts 10K vectors into a index built using 1M vectors.
+You could get a similar output as below. Note that the QPS, latency, and Recall might differ slightly.
+```
+This is a hello-world example for OdinANN, it inserts 10K vectors into a 1M index.
+[test_insert_search.cpp:369:INFO] num insert threads: 10
+... some outputs during index loading ...
+[utils.h:291:INFO] Reading truthset file /mnt/nvme/indices_upd/bigann_gnd_insert/2M_topk/gt_0.bin...
+[utils.h:300:INFO] Metadata: #pts = 10000, #dims = 10...
+  Ls        QPS           Mean Lat      50 Lat      90 Lat      95 Lat      99 Lat    99.9 Lat   Recall@10    Disk IOs
+==============================================================================
+  20     2902.91            8.8294       6.733      18.721       22.44      30.237       39.81      92.136      34.269
+... some other outputs during concurrent insert-search ...
+[direct_insert.cpp:285:INFO] Processed 9075 tasks, throughput: 1814.97 tasks/sec.
+... some other outputs during concurrent insert-search ...
+[utils.h:291:INFO] Reading truthset file /mnt/nvme/indices_upd/bigann_gnd_insert/2M_topk/gt_10000.bin...
+[utils.h:300:INFO] Metadata: #pts = 10000, #dims = 10...
+  Ls        QPS           Mean Lat      50 Lat      90 Lat      95 Lat      99 Lat    99.9 Lat   Recall@10    Disk IOs
+==============================================================================
+  20     9213.54           1.34341       1.139       2.199       2.617       3.181       3.708      92.155     34.2034
+... some other outputs for storing the index ...
+[test_insert_search.cpp:342:INFO] Store finished.
+```
+
+If you can see this output, then everything is OK, and you can start running the artifact.
+
+### Run All Experiments (Results Reproduced, eta: 30 days)
+
+We have pre-compiled other baselines (FreshDiskANN and SPFresh).
+
+* FreshDiskANN could be recompiled by executing `cmake ..` and `make -j` in its `build` directory.
+
+* SPFresh is not advised to be recompiled, as it uses SPDK. We allow it to be run without `root` using the `setuid` bit. If you **really** want to recompile it, contact the authors via HotCRP.
+
+Due to the limited time of AE, we assume that the reviewers cannot reproduce all the experiments.
+However, we prepare scripts for all the experiments.
+Reviewers could select some of them to reproduce. In general:
+
+```bash
+bash scripts/tests-odinann/figX.sh # X = 6, ..., 12
+```
+This generates the data used by Figure X. Here, we briefly introduce them:
+
+* `fig6.sh` runs OdinANN, DiskANN and SPFresh using an insert-search workload on SIFT100M dataset. (eta: 4d)
+* `fig7.sh` is similar to `fig6.sh`, but runs on DEEP100M dataset. (eta: 4d)
+* `fig8.sh` runs the same workload using SIFT1B dataset (insert 200M vectors into the index with 800M vectors). (eta: 8d)
+* `fig9.sh` inserts vectors using more insert threads. (eta: 1h)
+* `fig10.sh` depends on `fig6.sh` and `fig7.sh`,without running additional experiments.
+* `fig11.sh` runs the same workload using indexes with different out-neighbors (R). (eta: 5h)
+* `fig12.sh` runs the insert-delete-search workload. (eta: 6d)
+
+We place our experimental results inside the `data-example` folder for reference.
+As we changed the logging code during reconstruction, the output might be slightly different.
+
+### Plot the Figures
+
+#### (Recommended) For Visual Studio Code users
+
+Please install the Jupyter extension in VSCode. Then, please open `scripts/plotting.ipynb`.
+
+Please use the Python 3.10.12 (`/usr/bin/python`) kernel.
+
+Then, you can run each cell from top to bottom. The first cell contains prelude functions and definitions, so please run it first. Each other cell plots a figure.
+
+In each cell, set the variable `USE_EXAMPLE` to `True` to use our provided example data for plotting, `False` to use the data generated by the scripts above.
+
+### Appendix
+
+#### Code Structure
+
+We mainly introduce the `src` folder, which contains the main code.
+
+```bash
+src/
+├── CMakeLists.txt
+├── index.cpp # in-memory Vamana index
+├── ssd_index.cpp # on-disk index (search-only)
+├── search # search algorithms, details in README-PipeANN.md
+│   ├── beam_search.cpp # best-first search
+│   ├── coro_search.cpp # best-first search with inter-request scheduling
+│   ├── page_search.cpp # search algorithm in Starling (SIGMOD '24)
+│   └── pipe_search.cpp # our PipeANN search algorithm
+├── update
+│   ├── delete_merge.cpp # delete and merge implementation
+│   ├── direct_insert.cpp # insert implementation
+│   └── dynamic_index.cpp # on-disk index wrapper (search-insert)
+└── utils # some utils (mainly for index building)
+    ├── aux_utils.cpp
+    ├── distance.cpp
+    ├── linux_aligned_file_reader.cpp # io_uring and AIO support
+    ├── math_utils.cpp
+    ├── partition_and_pq.cpp
+    ├── prune_neighbors.cpp
+    └── utils.cpp
+```
+
+#### Indexes Used
+
+We pre-built the indexes in our evaluation.
+Here are the related files:
+
+```bash
+/mnt/nvme/data/
+├── bigann
+│   ├── 100M.bbin # SIFT100M dataset
+│   ├── 100M_gt.bin # SIFT100M ground truth
+│   ├── truth.bin # SIFT1B ground truth
+│   ├── bigann.bbin # SIFT1B dataset
+│   └── bigann_query.bbin # SIFT query
+└── deep
+    ├── 100M.fbin # DEEP100M dataset
+    ├── 100M_gt.bin # DEEP100M ground truth
+    └── queries.fbin # DEEP query
+
+/mnt/nvme/indices_upd
+├── bigann # SIFT100M index
+│   ├── 100M_disk.index
+│   ├── 100M_disk.index.tags
+│   ├── 100M_pq_compressed.bin
+│   └── 100M_pq_pivots.bin
+├── bigann_gnd
+│   └── 500M_topk # generated ground truth for insert-delete-search
+├── bigann_gnd_insert
+│   ├── 1B_topk # generated ground truth for insert-search
+│   └── 500M_topk # generated ground truth for insert-search
+├── bigann_varl # parameter study for different R (Figure 11)
+├── deep_gnd_insert
+│   └── 200M_topk # generated ground truth for insert-search
+└── sift1b # SIFT1B index (800M vectors, insert 200M vectors)
+    ├── 800M_disk.index
+    ├── 800M_disk.index.tags
+    ├── 800M_pq_compressed.bin
+    └── 800M_pq_pivots.bin
+
+/mnt/nvme2
+├── indices_spann # Indexes for SPFresh
+├── SPFresh # SPFresh code
+├── DiskANN # FreshDiskANN code
+└── PipeANN # source code of PipeANN+OdinANN
+
+# For each index of OdinANN, important files:
+/mnt/nvme/indices_upd/SIFT1B/
+├── 1B_disk.index # full graph index
+├── 1B_mem.index # in-memory graph
+├── 1B_mem.index.tags # in-memory vector ID -> on-disk vector ID
+├── 1B_pq_compressed.bin # PQ-compressed vectors
+└── 1B_pq_pivots.bin # PQ pivots
+```
+
 ## Cite Our Paper
 
 If you use this repository in your research, please cite our papers:
-```
-@inproceedings {fast26odinann,
-  author = {Hao Guo and Youyou Lu},
-  title = {OdinANN: Direct Insert for Consistently Stable Performance in Billion-Scale Graph-Based Vector Search},
-  booktitle = {24th USENIX Conference on File and Storage Technologies (FAST 26)},
-  year = {2026},
-  address = {Santa Clara, CA},
-  publisher = {USENIX Association}
-}
 
-@inproceedings {osdi25pipeann,
-  author = {Hao Guo and Youyou Lu},
-  title = {Achieving Low-Latency Graph-Based Vector Search via Aligning Best-First Search Algorithm with SSD},
-  booktitle = {19th USENIX Symposium on Operating Systems Design and Implementation (OSDI 25)},
-  year = {2025},
-  address = {Boston, MA},
-  pages = {171--186},
-  publisher = {USENIX Association}
-}
-```
+Hao Guo and Youyou Lu. OdinANN: Direct Insert for Consistently Stable Performance in Billion-Scale Graph-Based Vector Search. To appear in the 24th USENIX Conference on File and Storage Technologies (FAST '26), Santa Clara CA USA, February 2026.
+
+Hao Guo and Youyou Lu. Achieving Low-Latency Graph-Based Vector Search via Aligning Best-First Search Algorithm with SSD. To appear in the 19th USENIX Symposium on Operating Systems Design and Implementation (OSDI '25), Boston MA USA, July 2025.
 
 ## Acknowledgments
 
