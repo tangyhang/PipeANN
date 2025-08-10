@@ -99,6 +99,8 @@ This part introduces how to download the datasets, build the on-disk index, and 
 * DEEP1B using [deep1b_gt repository](https://github.com/matsui528/deep1b_gt) (Thanks, matsui528!);
 * SPACEV100M and SPACEV1B from [SPTAG](https://github.com/microsoft/SPTAG).
 
+If the links above are not available, you could get the datasets from [Big ANN benchmarks](https://big-ann-benchmarks.com/neurips21.html).
+
 If the datasets follow `ivecs` or `fvecs` format, you could transfer them into `bin` format using:
 ```bash
 build/tests/utils/bvecs_to_bin bigann_base.bvecs bigann.bin # for byte vecs (SIFT), bigann_base.bvecs -> bigann.bin
