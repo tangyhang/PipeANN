@@ -1,7 +1,7 @@
 #pragma once
 
 #include "journal.h"
-#include "tsl/robin_set.h"
+#include "utils/tsl/robin_set.h"
 #include "ssd_index.h"
 #include "index.h"
 #include <atomic>
@@ -11,7 +11,6 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
-#include "parameters.h"
 
 namespace pipeann {
 
@@ -48,7 +47,7 @@ namespace pipeann {
 
    public:
     size_t _dim;
-    _u32 _num_threads;  // search + insert + delete
+    uint32_t _num_threads;  // search + insert + delete
     uint64_t _beamwidth;
 
     std::shared_ptr<AlignedFileReader> reader = nullptr;

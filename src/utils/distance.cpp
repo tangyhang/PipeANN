@@ -466,7 +466,7 @@ namespace pipeann {
     result = _mm256_reduce_add_ps(sum);
 #else
 #pragma omp simd reduction(+ : result) aligned(a, b : 32)
-    for (_s32 i = 0; i < (_s32) size; i++) {
+    for (int32_t i = 0; i < (int32_t) size; i++) {
       result += (a[i] - b[i]) * (a[i] - b[i]);
     }
 #endif

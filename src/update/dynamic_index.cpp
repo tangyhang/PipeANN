@@ -1,6 +1,6 @@
 #include "neighbor.h"
-#include "timer.h"
-#include "tsl/robin_set.h"
+#include "utils/timer.h"
+#include "utils/tsl/robin_set.h"
 #include "utils.h"
 #include "v2/dynamic_index.h"
 #include <csignal>
@@ -24,33 +24,10 @@
 
 #include "aux_utils.h"
 #include "ssd_index.h"
-#include "parameters.h"
 
 #include "linux_aligned_file_reader.h"
 
 namespace pipeann {
-  void copy_index(const std::string &prefix_in, const std::string &prefix_out) {
-    LOG(INFO) << "Copying disk index from " << prefix_in << " to " << prefix_out;
-    std::filesystem::copy(prefix_in + "_disk.index", prefix_out + "_disk.index",
-                          std::filesystem::copy_options::overwrite_existing);
-    if (std::filesystem::exists(prefix_in + "_disk.index.tags")) {
-      std::filesystem::copy(prefix_in + "_disk.index.tags", prefix_out + "_disk.index.tags",
-                            std::filesystem::copy_options::overwrite_existing);
-    } else {
-      // remove the original tags.
-      std::filesystem::remove(prefix_out + "_disk.index.tags");
-    }
-    std::filesystem::copy(prefix_in + "_pq_pivots.bin", prefix_out + "_pq_pivots.bin",
-                          std::filesystem::copy_options::overwrite_existing);
-    std::filesystem::copy(prefix_in + "_pq_compressed.bin", prefix_out + "_pq_compressed.bin",
-                          std::filesystem::copy_options::overwrite_existing);
-    // partition data
-    if (std::filesystem::exists(prefix_in + "_partition.bin.aligned")) {
-      std::filesystem::copy(prefix_in + "_partition.bin.aligned", prefix_out + "_partition.bin.aligned",
-                            std::filesystem::copy_options::overwrite_existing);
-    }
-  }
-
   template<typename T, typename TagT>
   DynamicSSDIndex<T, TagT>::DynamicSSDIndex(Parameters &parameters, const std::string disk_prefix_in,
                                             const std::string disk_prefix_out, Distance<T> *dist,
@@ -70,26 +47,21 @@ namespace pipeann {
     this->_dist_metric = dist_metric;
     this->journal = new v2::Journal<TagT>(disk_prefix_out + "_journal");
 
-    _paras_disk.Set<unsigned>("L", parameters.Get<unsigned>("L_disk"));
-    _paras_disk.Set<unsigned>("R", parameters.Get<unsigned>("R_disk"));
-    _paras_disk.Set<unsigned>("C", parameters.Get<unsigned>("C"));
-    _paras_disk.Set<float>("alpha", parameters.Get<float>("alpha_disk"));
-    _paras_disk.Set<unsigned>("beamwidth", parameters.Get<unsigned>("beamwidth"));
-    _paras_disk.Set<bool>("saturate_graph", 0);
-
-    _num_threads = parameters.Get<_u32>("num_threads");
-    _beamwidth = parameters.Get<uint32_t>("beamwidth");
+    _paras_disk = parameters;
+    _num_threads = parameters.num_threads;
+    _beamwidth = parameters.beam_width;
 
     _disk_index_prefix_in = disk_prefix_in;
     _disk_index_prefix_out = disk_prefix_out;
     _dist_comp = dist;
 
     reader.reset(new LinuxAlignedFileReader());
-    _disk_index = new pipeann::SSDIndex<T, TagT>(this->_dist_metric, reader, false, true, &_paras_disk);
+    AbstractNeighbor<T> *nbr_handler = new PQNeighbor<T>();
+    _disk_index = new pipeann::SSDIndex<T, TagT>(this->_dist_metric, reader, nbr_handler, true, &_paras_disk);
 
 #ifndef NO_POLLUTE_ORIGINAL
     std::string disk_index_prefix_shadow = _disk_index_prefix_in + "_shadow";
-    copy_index(_disk_index_prefix_in, disk_index_prefix_shadow);
+    _disk_index->copy_index(_disk_index_prefix_in, disk_index_prefix_shadow);
     LOG(INFO) << "Copy disk index file to " << disk_index_prefix_shadow << "_disk.index";
     _disk_index_prefix_in = disk_index_prefix_shadow;
 #endif
@@ -214,6 +186,7 @@ namespace pipeann {
 
     // TODO(gh): do we really need to reload disk index?
     std::swap(_disk_index_prefix_in, _disk_index_prefix_out);
+    // reload the disk index
     _disk_index->reload(_disk_index_prefix_in.c_str(), _num_threads);
     LOG(INFO) << "Merge time : " << timer.elapsed() / 1000 << " ms";
   }

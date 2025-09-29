@@ -12,18 +12,19 @@ namespace pipeann {
   template<typename T>
   class FixedChunkPQTable {
     // data_dim = n_chunks * chunk_size;
-    //    _u64   n_chunks;    // n_chunks = # of chunks ndims is split into
-    //    _u64   chunk_size;  // chunk_size = chunk size of each dimension chunk
+    //    uint64_t   n_chunks;    // n_chunks = # of chunks ndims is split into
+    //    uint64_t   chunk_size;  // chunk_size = chunk size of each dimension chunk
     float *tables = nullptr;  // pq_tables = float* [[2^8 * [chunk_size]] * n_chunks]
     float *centroid = nullptr;
-    _u64 ndims;  // ndims = chunk_size * n_chunks
-    _u64 n_chunks;
-    _u32 *chunk_offsets = nullptr;
-    _u32 *rearrangement = nullptr;
+    uint32_t *chunk_offsets = nullptr;
+    uint32_t *rearrangement = nullptr;
     float *tables_T = nullptr;  // same as pq_tables, but col-major
     float *all_to_all_dists = nullptr;
 
    public:
+    uint64_t ndims;  // ndims = chunk_size * n_chunks
+    uint64_t n_chunks;
+
     uint64_t all_to_all_dist_size() {
       return sizeof(float) * n_chunks * NUM_PQ_CENTROIDS * NUM_PQ_CENTROIDS;
     }
@@ -31,30 +32,67 @@ namespace pipeann {
     FixedChunkPQTable() {
     }
 
-    virtual ~FixedChunkPQTable() {
-      if (tables != nullptr)
-        delete[] tables;
-      if (tables_T != nullptr)
-        delete[] tables_T;
-      if (rearrangement != nullptr)
-        delete[] rearrangement;
-      if (chunk_offsets != nullptr)
-        delete[] chunk_offsets;
-      if (centroid != nullptr)
-        delete[] centroid;
-      if (all_to_all_dists != nullptr)
-        delete[] all_to_all_dists;
+    FixedChunkPQTable &operator=(FixedChunkPQTable &&other) noexcept {
+      if (this != &other) {
+        this->ndims = other.ndims;
+        this->n_chunks = other.n_chunks;
+        this->tables = other.tables;
+        this->tables_T = other.tables_T;
+        this->rearrangement = other.rearrangement;
+        this->chunk_offsets = other.chunk_offsets;
+        this->centroid = other.centroid;
+        this->all_to_all_dists = other.all_to_all_dists;
+
+        other.tables = nullptr;
+        other.tables_T = nullptr;
+        other.rearrangement = nullptr;
+        other.chunk_offsets = nullptr;
+        other.centroid = nullptr;
+        other.all_to_all_dists = nullptr;
+      }
+      return *this;
     }
 
-    _u64 get_dim() {
+    virtual ~FixedChunkPQTable() {
+      destroy_table();
+    }
+
+    void destroy_table() {
+      if (tables != nullptr) {
+        delete[] tables;
+        tables = nullptr;
+      }
+      if (tables_T != nullptr) {
+        delete[] tables_T;
+        tables_T = nullptr;
+      }
+      if (rearrangement != nullptr) {
+        delete[] rearrangement;
+        rearrangement = nullptr;
+      }
+      if (chunk_offsets != nullptr) {
+        delete[] chunk_offsets;
+        chunk_offsets = nullptr;
+      }
+      if (centroid != nullptr) {
+        delete[] centroid;
+        centroid = nullptr;
+      }
+      if (all_to_all_dists != nullptr) {
+        delete[] all_to_all_dists;
+        all_to_all_dists = nullptr;
+      }
+    }
+
+    uint64_t get_dim() {
       return ndims;
     }
 
     void load_pq_pivots_new(std::basic_istream<char> &reader, size_t num_chunks, size_t offset) {
-      _u64 nr, nc;
-      std::unique_ptr<_u64[]> file_offset_data;
-      _u64 *file_offset_data_raw;
-      pipeann::load_bin_impl<_u64>(reader, file_offset_data_raw, nr, nc, offset);
+      uint64_t nr, nc;
+      std::unique_ptr<uint64_t[]> file_offset_data;
+      uint64_t *file_offset_data_raw;
+      pipeann::load_bin_impl<uint64_t>(reader, file_offset_data_raw, nr, nc, offset);
       file_offset_data.reset(file_offset_data_raw);
 
       if (nr != NUM_PQ_OFFSETS) {
@@ -95,25 +133,38 @@ namespace pipeann {
                 << ", #chunks: " << this->n_chunks;
     }
 
+    void save_pq_pivots(const char *pq_pivots_path) {
+      std::vector<size_t> offs(NUM_PQ_OFFSETS, 0);
+      offs[0] = METADATA_SIZE;
+      offs[1] = offs[0] + pipeann::save_bin<float>(pq_pivots_path, tables, NUM_PQ_CENTROIDS, this->ndims, offs[0]);
+      offs[2] = offs[1] + pipeann::save_bin<float>(pq_pivots_path, centroid, this->ndims, 1, offs[1]);
+      offs[3] = offs[2] + pipeann::save_bin<uint32_t>(pq_pivots_path, rearrangement, this->ndims, 1, offs[2]);
+      offs[4] = offs[3] + pipeann::save_bin<uint32_t>(pq_pivots_path, chunk_offsets, this->n_chunks + 1, 1, offs[3]);
+      pipeann::save_bin<uint64_t>(pq_pivots_path, offs.data(), offs.size(), 1, 0);
+    }
+
     void post_load_pq_table() {
       // alloc and compute transpose
       pipeann::alloc_aligned((void **) &tables_T, 256 * ndims * sizeof(float), 64);
       // tables_T = new float[256 * ndims];
-      for (_u64 i = 0; i < 256; i++) {
-        for (_u64 j = 0; j < ndims; j++) {
+      for (uint64_t i = 0; i < 256; i++) {
+        for (uint64_t j = 0; j < ndims; j++) {
           tables_T[j * 256 + i] = tables[i * ndims + j];
         }
       }
 
       // added this for easy PQ-PQ squared-distance calculations
       // TODO: Create only for StreamingMerger.
+      if (all_to_all_dists != nullptr) {
+        delete[] all_to_all_dists;
+      }
       all_to_all_dists = new float[256 * 256 * n_chunks];
       std::memset(all_to_all_dists, 0, 256 * 256 * n_chunks * sizeof(float));
       // should perhaps optimize later
-      for (_u32 i = 0; i < 256; i++) {
-        for (_u32 j = 0; j < 256; j++) {
-          for (_u32 c = 0; c < n_chunks; c++) {
-            for (_u64 d = chunk_offsets[c]; d < chunk_offsets[c + 1]; d++) {
+      for (uint32_t i = 0; i < 256; i++) {
+        for (uint32_t j = 0; j < 256; j++) {
+          for (uint32_t c = 0; c < n_chunks; c++) {
+            for (uint64_t d = chunk_offsets[c]; d < chunk_offsets[c + 1]; d++) {
               float diff = (tables[i * ndims + d] - tables[j * ndims + d]);
               all_to_all_dists[i * 256 * n_chunks + j * n_chunks + c] += diff * diff;
             }
@@ -124,8 +175,7 @@ namespace pipeann {
 
     void load_pq_centroid_bin(const char *pq_table_file, size_t num_chunks, size_t offset = 0) {
       std::string pq_pivots_path(pq_table_file);
-      _u64 nr, nc;
-
+      uint64_t nr, nc;
       get_bin_metadata(pq_table_file, nr, nc, offset);
       std::ifstream reader(pq_table_file, std::ios::binary | std::ios::ate);
       reader.seekg(0);
@@ -137,13 +187,13 @@ namespace pipeann {
     void populate_chunk_distances(const T *query_vec, float *dist_vec) {
       memset(dist_vec, 0, 256 * n_chunks * sizeof(float));
       // chunk wise distance computation
-      for (_u64 chunk = 0; chunk < n_chunks; chunk++) {
+      for (uint64_t chunk = 0; chunk < n_chunks; chunk++) {
         // sum (q-c)^2 for the dimensions associated with this chunk
         float *chunk_dists = dist_vec + (256 * chunk);
-        for (_u64 j = chunk_offsets[chunk]; j < chunk_offsets[chunk + 1]; j++) {
-          _u64 permuted_dim_in_query = rearrangement[j];
+        for (uint64_t j = chunk_offsets[chunk]; j < chunk_offsets[chunk + 1]; j++) {
+          uint64_t permuted_dim_in_query = rearrangement[j];
           const float *centers_dim_vec = tables_T + (256 * j);
-          for (_u64 idx = 0; idx < 256; idx++) {
+          for (uint64_t idx = 0; idx < 256; idx++) {
             double diff = centers_dim_vec[idx] - (query_vec[permuted_dim_in_query] - centroid[permuted_dim_in_query]);
             chunk_dists[idx] += (float) (diff * diff);
           }
@@ -155,13 +205,13 @@ namespace pipeann {
 #ifdef USE_AVX512
       memset(dist_vec, 0, 256 * n_chunks * sizeof(float));
       // chunk wise distance computation
-      for (_u64 chunk = 0; chunk < n_chunks; chunk++) {
+      for (uint64_t chunk = 0; chunk < n_chunks; chunk++) {
         // sum (q-c)^2 for the dimensions associated with this chunk
         float *chunk_dists = dist_vec + (256 * chunk);
-        for (_u64 j = chunk_offsets[chunk]; j < chunk_offsets[chunk + 1]; j++) {
-          _u64 permuted_dim_in_query = rearrangement[j];
+        for (uint64_t j = chunk_offsets[chunk]; j < chunk_offsets[chunk + 1]; j++) {
+          uint64_t permuted_dim_in_query = rearrangement[j];
           float *centers_dim_vec = tables_T + (256 * j);
-          for (_u64 idx = 0; idx < 256; idx += 16) {
+          for (uint64_t idx = 0; idx < 256; idx += 16) {
             __m512i center_i = _mm512_stream_load_si512(centers_dim_vec + idx);  // avoid cache thrashing
             __m512 center_f = _mm512_castsi512_ps(center_i);
             __m512 query_f = _mm512_set1_ps(query_vec[permuted_dim_in_query] - centroid[permuted_dim_in_query]);
@@ -184,32 +234,33 @@ namespace pipeann {
     // comp_dsts: count * [nchunks]
     // dists: [count]
     // TODO (perf) :: re-order computation to get better locality
-    void compute_distances_alltoall(const _u8 *comp_src, const _u8 *comp_dsts, float *dists, const _u32 count) {
+    void compute_distances_alltoall(const uint8_t *comp_src, const uint8_t *comp_dsts, float *dists,
+                                    const uint32_t count) {
       std::memset(dists, 0, count * sizeof(float));
-      for (_u64 i = 0; i < count; i++) {
-        for (_u64 c = 0; c < n_chunks; c++) {
-          dists[i] +=
-              all_to_all_dists[(_u64) comp_src[c] * 256 * n_chunks + (_u64) comp_dsts[i * n_chunks + c] * n_chunks + c];
+      for (uint64_t i = 0; i < count; i++) {
+        for (uint64_t c = 0; c < n_chunks; c++) {
+          dists[i] += all_to_all_dists[(uint64_t) comp_src[c] * 256 * n_chunks +
+                                       (uint64_t) comp_dsts[i * n_chunks + c] * n_chunks + c];
         }
       }
     }
 
     // fp_vec: [ndims]
     // out_pq_vec : [nchunks]
-    void deflate_vec(const float *fp_vec, _u8 *out_pq_vec) {
+    void deflate_vec(const float *fp_vec, uint8_t *out_pq_vec) {
       // permute the vector according to PQ rearrangement, compute all distances
       // to 256 centroids and choose the closest (for each chunk)
-      for (_u32 c = 0; c < n_chunks; c++) {
+      for (uint32_t c = 0; c < n_chunks; c++) {
         float closest_dist = std::numeric_limits<float>::max();
-        for (_u32 i = 0; i < 256; i++) {
+        for (uint32_t i = 0; i < 256; i++) {
           float cur_dist = 0;
-          for (_u64 d = chunk_offsets[c]; d < chunk_offsets[c + 1]; d++) {
+          for (uint64_t d = chunk_offsets[c]; d < chunk_offsets[c + 1]; d++) {
             float diff = (tables[i * ndims + d] - ((float) fp_vec[rearrangement[d]] - centroid[rearrangement[d]]));
             cur_dist += diff * diff;
           }
           if (cur_dist < closest_dist) {
             closest_dist = cur_dist;
-            out_pq_vec[c] = (_u8) i;
+            out_pq_vec[c] = (uint8_t) i;
           }
         }
       }

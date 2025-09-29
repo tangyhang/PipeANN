@@ -101,7 +101,7 @@ void exact_knn(const size_t dim, const size_t k,
   size_t q_batch_size = (1 << 9);
   float *dist_matrix = new float[(size_t) q_batch_size * (size_t) npoints];
 
-  for (_u64 b = 0; b < div_round_up(nqueries, q_batch_size); ++b) {
+  for (uint64_t b = 0; b < div_round_up(nqueries, q_batch_size); ++b) {
     int64_t q_b = b * q_batch_size;
     int64_t q_e = ((b + 1) * q_batch_size > nqueries) ? nqueries : (b + 1) * q_batch_size;
 
@@ -112,9 +112,9 @@ void exact_knn(const size_t dim, const size_t k,
 #pragma omp parallel for schedule(dynamic, 16)
     for (long long q = q_b; q < q_e; q++) {
       maxPQIFCS point_dist;
-      for (_u64 p = 0; p < k; p++)
+      for (uint64_t p = 0; p < k; p++)
         point_dist.emplace(p, dist_matrix[(ptrdiff_t) p + (ptrdiff_t) (q - q_b) * (ptrdiff_t) npoints]);
-      for (_u64 p = k; p < npoints; p++) {
+      for (uint64_t p = k; p < npoints; p++) {
         if (point_dist.top().second > dist_matrix[(ptrdiff_t) p + (ptrdiff_t) (q - q_b) * (ptrdiff_t) npoints])
           point_dist.emplace(p, dist_matrix[(ptrdiff_t) p + (ptrdiff_t) (q - q_b) * (ptrdiff_t) npoints]);
         if (point_dist.size() > k)
@@ -146,8 +146,8 @@ inline int get_num_parts(const char *filename) {
   reader.read((char *) &ndims_i32, sizeof(int));
   std::cout << "#pts = " << npts_i32 << ", #dims = " << ndims_i32 << std::endl;
   reader.close();
-  uint32_t num_parts = (npts_i32 % PARTSIZE) == 0 ? (_u32) (npts_i32 / PARTSIZE)
-                                                  : (_u32) std::floor((double) npts_i32 / (double) PARTSIZE) + 1;
+  uint32_t num_parts = (npts_i32 % PARTSIZE) == 0 ? (uint32_t) (npts_i32 / PARTSIZE)
+                                                  : (uint32_t) std::floor((double) npts_i32 / (double) PARTSIZE) + 1;
   std::cout << "Number of parts: " << num_parts << std::endl;
   return num_parts;
 }
@@ -254,8 +254,8 @@ int aux_main(int argc, char **argv) {
 
     exact_knn(dim, k, closest_points_part, dist_closest_points_part, npoints, base_data, nqueries, query_data);
 
-    for (_u64 i = 0; i < nqueries; i++) {
-      for (_u64 j = 0; j < k; j++) {
+    for (uint64_t i = 0; i < nqueries; i++) {
+      for (uint64_t j = 0; j < k; j++) {
         results[i].push_back(std::make_pair((uint32_t) (closest_points_part[i * k + j] + start_id),
                                             dist_closest_points_part[i * k + j]));
       }
@@ -266,10 +266,10 @@ int aux_main(int argc, char **argv) {
     pipeann::aligned_free(base_data);
   }
 
-  for (_u64 i = 0; i < nqueries; i++) {
+  for (uint64_t i = 0; i < nqueries; i++) {
     std::vector<std::pair<uint32_t, float>> &cur_res = results[i];
     std::sort(cur_res.begin(), cur_res.end(), custom_dist);
-    for (_u64 j = 0; j < k; j++) {
+    for (uint64_t j = 0; j < k; j++) {
       closest_points[i * k + j] = (int32_t) cur_res[j].first;
       dist_closest_points[i * k + j] = cur_res[j].second;
     }

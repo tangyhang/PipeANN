@@ -8,7 +8,22 @@ PipeANN is a **low-latency, billion-scale, and updatable** graph-based vector st
 
 * **Efficient vector updates**: `insert` and `delete` are supported with minimal interference with concurrent search (fluctuates only **1.07X**) and reduced memory usage (only **<90GB** for billion-scale datasets).
 
-## Build PipeANN
+* **Easy-to-use interface**: Both Python and C++ are supported. Python interfaces are `faiss`-like and easy-to-use. C++ interfaces are suiltable for performance-critical scenarios.
+
+## Why Use PipeANN?
+
+PipeANN is suitable for both **large-scale** and **memory-constraint** scenarios.
+
+| #Vecs | Mem | Lat | QPS | PipeANN | Traditional |
+| ----- | --- | --- | --- | ------- | ----------- |
+| 1B (SPACEV) | 40GB | 2ms | 5K | ✅ | ❌ (1TB mem / 6ms)  |
+| 80M (Wiki) | 10GB | 1.5ms | 5K | ✅ | ❌ (300GB mem / 4ms) |
+| 10M (SIFT) | 1.5GB | <1ms | 10K | ✅ | ❌ (4GB mem / 3ms) |
+
+Recall@10 = 0.99. Index is stored in a single Samsung PM9A3 (3.84TB) SSD.
+`NO_MAPPING` is enabled.
+
+## Prerequisites
 
 ### Basic Configurations
 
@@ -29,13 +44,14 @@ PipeANN is a **low-latency, billion-scale, and updatable** graph-based vector st
 For `Ubuntu >= 22.04`, the command to install them:
 
 ```bash
-sudo apt install make cmake g++ libaio-dev libgoogle-perftools-dev clang-format libboost-all-dev libmkl-full-dev libjemalloc-dev
+sudo apt install make cmake g++ libaio-dev libgoogle-perftools-dev clang-format libmkl-full-dev
+pip3 install "pybind11[global]" # for Python interface.
 ```
 
 The `libmkl` could be replaced by other `BLAS` libraries (e.g., OpenBlas).
 
 
-### Build the Repository
+## Build PipeANN
 
 First, build `liburing`. The compiled `liburing` library is in its `src` folder.
 
@@ -46,11 +62,103 @@ make -j
 ```
 
 
-Then, build PipeANN.
+Then, build PipeANN. For Python interface, Python 3.12 is tested.
 
+```bash
+python setup.py install
+```
+This installs a wheel named `pipeann` to your current Python environment.
+
+
+For C++ interface:
 ```bash
 bash ./build.sh
 ```
+
+The C++ programs built are in `build` folder.
+For performance-critical benchmarks, we recommend to use C++ interfaces.
+
+## Quick Start (Python interface)
+
+PipeANN now supports Python using `faiss`-like interfaces. An example is in `tests_py/index_example.py`. It builds an on-SSD index, and then searches and inserts vectors.
+
+```bash
+python setup.py install
+cd tests_py
+# Please modify the hard-coded paths first!
+python index_example.py
+```
+
+It runs like this:
+```bash
+# Insert the first 100K vectors using in-memory index.
+[index.cpp:68:INFO] Getting distance function for metric: l2
+Building index with prefix /mnt/nvme/indices/bigann/1M...
+# ...
+Inserting the first 1M points 100000 to 110000 ...
+# Transform the in-memory index to SSD index.
+[pyindex.h:100:INFO] Transform memory index to disk index.
+# ...
+[pyindex.h:109:INFO] Transform memory index to disk index done.
+# Insert the remaining 900K vectors, save, and reload the SSD index.
+Inserting the first 1M points 110000 to 120000 ...
+# ...
+[ssd_index.cpp:206:INFO] SSDIndex loaded successfully.
+# The first search in the SIFT1M dataset.
+Searching for 10 nearest neighbors with L=10...
+Search time: 0.6290 seconds for 10000 queries, throughput: 15897.957218870273 QPS.
+Recall@10 with L=10: 0.7397
+# ...
+Searching for 10 nearest neighbors with L=50...
+Search time: 0.8746 seconds for 10000 queries, throughput: 11433.789824882691 QPS.
+Recall@10 with L=50: 0.9784
+# Insert the second 1M vectors, save and reload.
+Inserting 1M new vectors to the index ...
+# ...
+[ssd_index.cpp:206:INFO] SSDIndex loaded successfully.
+# The second search in the SIFT2M dataset.
+Searching for 10 nearest neighbors with L=10...
+Search time: 0.6461 seconds for 10000 queries, throughput: 15477.096553625139 QPS.
+Recall@10 with L=10: 0.7181
+# ...
+Searching for 10 nearest neighbors with L=50...
+Search time: 0.8907 seconds for 10000 queries, throughput: 11227.508131590563 QPS.
+Recall@10 with L=50: 0.9720
+```
+
+
+An explanation to the interfaces:
+
+```python
+from pipeann import IndexPipeANN, Metric
+
+idx = IndexPipeANN(data_dim, data_type, Metric.L2)
+idx.omp_set_num_threads(32) # the number of search/insert/delete threads.
+idx.set_index_prefix(index_prefix) # the index is stored to {index_prefix}_disk.index
+
+# The index is in-memory at first.
+# If its capacity exceeds build_threshold (100000), 
+# it is automatically transformed into on-disk index.
+idx.add(vectors, tags) # insert vectors into the index. 
+
+# For SSD index initialized using idx.add, out-neighbor number is fixed to 64.
+# For large-scale datasets (>= 10M), we recommend using idx.build for initialization.
+# It ensures higher search accuracy with more (automatically configured) out-neighbors.
+# idx.build(data_path, index_prefix)
+# idx.load(index_prefix) # load the pre-built index from disk.
+
+# Search the index using PipeSearch (on-SSD) 
+# or best-first search (in-memory)
+idx.search(queries, topk, L) 
+
+idx.remove(tags) # remove vectors from the index with corresponding tags.
+# The index should be saved after updates.
+idx.save(index_prefix) # save the index.
+```
+
+We also implemented a simple client for `open_webui` at `webui_client.py`.
+However, it is not well-tested. 
+We welcome any **contributions to support more applications** (e.g., langchain)!
 
 ## Quick Start (Search-Only)
 
@@ -103,9 +211,9 @@ If the links above are not available, you could get the datasets from [Big ANN b
 
 If the datasets follow `ivecs` or `fvecs` format, you could transfer them into `bin` format using:
 ```bash
-build/tests/utils/bvecs_to_bin bigann_base.bvecs bigann.bin # for byte vecs (SIFT), bigann_base.bvecs -> bigann.bin
-build/tests/utils/fvecs_to_bin base.fvecs deep.bin # for float vecs (DEEP) base.fvecs -> deep.bin
-build/tests/utils/ivecs_to_bin idx_1000M.ivecs idx_1000M.ibin # for int vecs (SIFT groundtruth) idx_1000M.ivecs -> idx_1000M.ibin
+build/tests/utils/vecs_to_bin int8 bigann_base.bvecs bigann.bin # for int8/uint8 vecs (SIFT), bigann_base.bvecs -> bigann.bin
+build/tests/utils/vecs_to_bin float base.fvecs deep.bin # for float vecs (DEEP) base.fvecs -> deep.bin
+build/tests/utils/vecs_to_bin int32 idx_1000M.ibin # for int32/uint32 vecs (SIFT groundtruth) idx_1000M.ivecs -> idx_1000M.ibin
 ```
 
 We need the `bin` files for `base`, `query`, and `groundtruth`.
@@ -168,8 +276,8 @@ PipeANN uses the same on-disk index as DiskANN.
 
 ```bash
 # Usage:
-# build/tests/build_disk_index <data_type (float/int8/uint8)> <data_file.bin> <index_prefix_path> <R>  <L>  <B>  <M>  <T> <similarity metric (cosine/l2) case sensitive>. <single_file_index (0/1)>
-build/tests/build_disk_index uint8 /mnt/nvme/data/bigann/100M.bbin /mnt/nvme2/indices/bigann/100m 96 128 3.3 256 112 l2 0
+# build/tests/build_disk_index <data_type (float/int8/uint8)> <data_file.bin> <index_prefix_path> <R>  <L>  <PQ_bytes>  <M>  <T> <similarity metric (cosine/l2) case sensitive>. <single_file_index (0/1)>
+build/tests/build_disk_index uint8 /mnt/nvme/data/bigann/100M.bbin /mnt/nvme2/indices/bigann/100m 96 128 32 256 112 l2 0
 ```
 
 The final index files will share a prefix of `/mnt/nvme2/indices/bigann/100m`.
@@ -178,17 +286,17 @@ Parameter explanation:
 
 * R: maximum out-neighbors
 * L: candidate pool size during build (build in fact conducts vector searches to optimize graph edges)
-* B: in-memory PQ-compressed vector size. Our goal is to use 32 bytes per vector; higher-dimensional vectors might require more bytes.
+* PQ_bytes: Bytes per PQ vector. We use 32 bytes for the three datasets; higher-dimensional vectors might require more bytes.
 * M: maximum memory used during build, 256GB is sufficient for the 100M index to be built totally in memory.
 * T: number of threads used during build. Our machine has 112 threads.
 
 We use the following parameters when building indexes:
 
-| Dataset       | type | R  | L | B | M | T | similarity
+| Dataset       | type | R  | L | PQ_bytes | M | T | similarity
 |---------------|---|---|---|---|---| --- | --- 
-| SIFT/DEEP/SPACEV100M | uint8/float/int8 | 96 | 128 | 3.3 | 256 | 112 | L2
-| SIFT1B   | uint8 | 128 |  200 | 33 | 500 | 112 | L2
-| SPACEV1B | int8 | 128 | 200  | 43 | 500 | 112 | L2
+| SIFT/DEEP/SPACEV100M | uint8/float/int8 | 96 | 128 | 32 | 256 | 112 | L2
+| SIFT1B   | uint8 | 128 |  200 | 32 | 500 | 112 | L2
+| SPACEV1B | int8 | 128 | 200  | 32 | 500 | 112 | L2
 
 #### Build In-Memory Entry-Point Index (Optional)
 

@@ -14,10 +14,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-typedef int FileHandle;
-
 #include "distance.h"
-#include "log.h"
+#include "utils/log.h"
 
 // taken from
 // https://github.com/Microsoft/BLAS-on-flash/blob/master/include/utils.h
@@ -32,18 +30,9 @@ typedef int FileHandle;
 // alignment tests
 #define IS_ALIGNED(X, Y) ((uint64_t) (X) % (uint64_t) (Y) == 0)
 #define IS_512_ALIGNED(X) IS_ALIGNED(X, 512)
-#define IS_4096_ALIGNED(X) IS_ALIGNED(X, 4096)
 #define METADATA_SIZE \
   4096  // all metadata of individual sub-component files is written in first
         // 4KB for unified files
-typedef uint64_t _u64;
-typedef int64_t _s64;
-typedef uint32_t _u32;
-typedef int32_t _s32;
-typedef uint16_t _u16;
-typedef int16_t _s16;
-typedef uint8_t _u8;
-typedef int8_t _s8;
 
 /* Used to replace exception. */
 inline void crash() {
@@ -57,17 +46,17 @@ static inline bool file_exists(const std::string &name, bool dirCheck = false) {
   struct stat buffer;
   val = stat(name.c_str(), &buffer);
 
-  LOG(INFO) << " Stat(" << name.c_str() << ") returned: " << val;
+  DLOG(INFO) << " Stat(" << name.c_str() << ") returned: " << val;
   if (val != 0) {
     switch (errno) {
       case EINVAL:
-        LOG(INFO) << "Invalid argument passed to stat()";
+        DLOG(INFO) << "Invalid argument passed to stat()";
         break;
       case ENOENT:
-        LOG(INFO) << "File " << name.c_str() << " does not exist";
+        DLOG(INFO) << "File " << name.c_str() << " does not exist";
         break;
       default:
-        LOG(INFO) << "Unexpected error in stat():" << errno;
+        DLOG(INFO) << "Unexpected error in stat():" << errno;
         break;
     }
     return false;
@@ -89,10 +78,10 @@ inline void open_file_to_write(std::ofstream &writer, const std::string &filenam
   }
 }
 
-inline _u64 get_file_size(const std::string &fname) {
+inline uint64_t get_file_size(const std::string &fname) {
   std::ifstream reader(fname, std::ios::binary | std::ios::ate);
   if (!reader.fail() && reader.is_open()) {
-    _u64 end_pos = reader.tellg();
+    uint64_t end_pos = reader.tellg();
     reader.close();
     return end_pos;
   } else {
@@ -120,21 +109,11 @@ namespace pipeann {
 
   enum Metric { L2 = 0, INNER_PRODUCT = 1, FAST_L2 = 2, PQ = 3, COSINE = 4 };
 
-  float calc_recall_set_tags(unsigned num_queries, unsigned *gold_std, unsigned dim_gs, unsigned *our_results_tags,
-                             unsigned dim_or, unsigned recall_at, unsigned subset_size, std::string gt_tag_filename,
-                             std::string current_tag_filename);
-
   inline void alloc_aligned(void **ptr, size_t size, size_t align) {
     *ptr = nullptr;
     assert(IS_ALIGNED(size, align));
     *ptr = ::aligned_alloc(align, size);
     assert(*ptr != nullptr);
-  }
-
-  inline void check_stop(std::string arnd) {
-    int brnd;
-    LOG(INFO) << arnd;
-    std::cin >> brnd;
   }
 
   inline void aligned_free(void *ptr) {
@@ -144,24 +123,6 @@ namespace pipeann {
     free(ptr);
   }
 
-  inline void GenRandom(std::mt19937 &rng, unsigned *addr, unsigned size, unsigned N) {
-    for (unsigned i = 0; i < size; ++i) {
-      addr[i] = rng() % (N - size);
-    }
-
-    std::sort(addr, addr + size);
-    for (unsigned i = 1; i < size; ++i) {
-      if (addr[i] <= addr[i - 1]) {
-        addr[i] = addr[i - 1] + 1;
-      }
-    }
-    unsigned off = rng() % N;
-    for (unsigned i = 0; i < size; ++i) {
-      addr[i] = (addr[i] + off) % N;
-    }
-  }
-
-  // get_bin_metadata functions START
   inline void get_bin_metadata_impl(std::basic_istream<char> &reader, size_t &nrows, size_t &ncols, size_t offset = 0) {
     int nrows_32, ncols_32;
     reader.seekg(offset, reader.beg);
@@ -175,8 +136,7 @@ namespace pipeann {
     std::ifstream reader(bin_file.c_str(), std::ios::binary);
     get_bin_metadata_impl(reader, nrows, ncols, offset);
   }
-  // get_bin_metadata functions END
-  // load_bin functions START
+
   template<typename T>
   inline void load_bin_impl(std::basic_istream<char> &reader, T *&data, size_t &npts, size_t &dim,
                             size_t file_offset = 0) {
@@ -188,7 +148,7 @@ namespace pipeann {
     npts = (unsigned) npts_i32;
     dim = (unsigned) dim_i32;
 
-    LOG(INFO) << "Metadata: #pts = " << npts << ", #dims = " << dim << "...";
+    DLOG(INFO) << "Metadata: #pts = " << npts << ", #dims = " << dim << "...";
 
     data = new T[npts * dim];
     reader.read((char *) data, npts * dim * sizeof(T));
@@ -205,7 +165,7 @@ namespace pipeann {
     npts = (unsigned) npts_i32;
     dim = (unsigned) dim_i32;
 
-    LOG(INFO) << "Metadata: #pts = " << npts << ", #dims = " << dim << "...";
+    DLOG(INFO) << "Metadata: #pts = " << npts << ", #dims = " << dim << "...";
 
     data.resize(npts * dim);
     reader.read((char *) (data.data()), npts * dim * sizeof(T));
@@ -213,12 +173,7 @@ namespace pipeann {
 
   template<typename T>
   inline void load_bin(const std::string &bin_file, T *&data, size_t &npts, size_t &dim, size_t offset = 0) {
-    // OLS
-    //_u64            read_blk_size = 64 * 1024 * 1024;
-    // cached_ifstream reader(bin_file, read_blk_size);
-    // size_t actual_file_size = reader.get_file_size();
-    // END OLS
-    LOG(INFO) << "Reading bin file " << bin_file.c_str() << " ...";
+    DLOG(INFO) << "Reading bin file " << bin_file.c_str() << " ...";
     std::ifstream reader(bin_file, std::ios::binary | std::ios::ate);
     reader.seekg(0);
 
@@ -228,64 +183,17 @@ namespace pipeann {
   template<typename T>
   inline void load_bin(const std::string &bin_file, std::vector<T> &data, size_t &npts, size_t &dim,
                        size_t offset = 0) {
-    // OLS
-    //_u64            read_blk_size = 64 * 1024 * 1024;
-    // cached_ifstream reader(bin_file, read_blk_size);
-    // size_t actual_file_size = reader.get_file_size();
-    // END OLS
-    LOG(INFO) << "Reading bin file " << bin_file.c_str() << " ...";
+    DLOG(INFO) << "Reading bin file " << bin_file.c_str() << " ...";
     std::ifstream reader(bin_file, std::ios::binary | std::ios::ate);
     reader.seekg(0);
 
     load_bin_impl<T>(reader, data, npts, dim, offset);
   }
-  // load_bin functions END
-
-  // template<typename T>
-  // inline void load_bin(const std::string& bin_file, std::vector<T>& data, size_t& npts, size_t& dim,
-  //                      size_t offset = 0) {
-  //   // OLS
-  //   //_u64            read_blk_size = 64 * 1024 * 1024;
-  //   // cached_ifstream reader(bin_file, read_blk_size);
-  //   // size_t actual_file_size = reader.get_file_size();
-  //   // END OLS
-  //   LOG(INFO) << "Reading bin file " << bin_file.c_str() << " ...";
-  //   std::ifstream reader(bin_file, std::ios::binary | std::ios::ate);
-  //   uint64_t fsize = reader.tellg();
-  //   reader.seekg(0);
-
-  //   load_bin_impl<T>(reader, data, npts, dim, offset);
-  //   if (fsize != reader.tellg()) {
-  //     LOG(ERROR) << "File size mismatch. Expected: " << fsize << ", actual: " << reader.tellg();
-  //     exit(-1);
-  //   }
-  // }
-
-  template<typename T>
-  inline uint64_t save_bin_sector_aligned(const std::string &filename, T *data, size_t npts, size_t ndims,
-                                          size_t offset = 0) {
-    std::ofstream writer;
-    open_file_to_write(writer, filename);
-
-    LOG(INFO) << "Writing bin sector aligned: " << filename.c_str();
-    writer.seekp(offset, writer.beg);
-    int npts_i32 = (int) npts, ndims_i32 = (int) ndims;
-    size_t bytes_written = npts * ndims * sizeof(T) + 2 * sizeof(uint32_t);
-    writer.write((char *) &npts_i32, sizeof(int));
-    writer.write((char *) &ndims_i32, sizeof(int));
-    LOG(INFO) << "bin: #pts = " << npts << ", #dims = " << ndims << ", size = " << bytes_written << "B";
-
-    writer.seekp(offset + METADATA_SIZE, writer.beg);
-    writer.write((char *) data, npts * ndims * sizeof(T));
-    writer.close();
-    LOG(INFO) << "Finished writing bin.";
-    return bytes_written;
-  }
 
   inline void load_truthset(const std::string &bin_file, uint32_t *&ids, float *&dists, size_t &npts, size_t &dim,
                             uint32_t **tags = nullptr) {
     std::ifstream reader(bin_file, std::ios::binary);
-    LOG(INFO) << "Reading truthset file " << bin_file.c_str() << "...";
+    DLOG(INFO) << "Reading truthset file " << bin_file.c_str() << "...";
     size_t actual_file_size = get_file_size(bin_file);
 
     int npts_i32, dim_i32;
@@ -294,7 +202,7 @@ namespace pipeann {
     npts = (unsigned) npts_i32;
     dim = (unsigned) dim_i32;
 
-    LOG(INFO) << "Metadata: #pts = " << npts << ", #dims = " << dim << "...";
+    DLOG(INFO) << "Metadata: #pts = " << npts << ", #dims = " << dim << "...";
 
     int truthset_type = -1;  // 1 means truthset has ids and distances, 2 means
                              // only ids, -1 is error
@@ -350,70 +258,28 @@ namespace pipeann {
     std::ofstream writer;
     open_file_to_write(writer, filename);
 
-    LOG(INFO) << "Writing bin: " << filename.c_str();
+    DLOG(INFO) << "Writing bin: " << filename.c_str();
     writer.seekp(offset, writer.beg);
     int npts_i32 = (int) npts, ndims_i32 = (int) ndims;
     size_t bytes_written = npts * ndims * sizeof(T) + 2 * sizeof(uint32_t);
     writer.write((char *) &npts_i32, sizeof(int));
     writer.write((char *) &ndims_i32, sizeof(int));
-    LOG(INFO) << "bin: #pts = " << npts << ", #dims = " << ndims << ", size = " << bytes_written << "B";
+    DLOG(INFO) << "bin: #pts = " << npts << ", #dims = " << ndims << ", size = " << bytes_written << "B";
 
     writer.write((char *) data, npts * ndims * sizeof(T));
     writer.close();
-    LOG(INFO) << "Finished writing bin.";
+    DLOG(INFO) << "Finished writing bin.";
     return bytes_written;
-  }
-
-  // load_aligned_bin functions START
-
-  template<typename T>
-  inline void load_aligned_bin_impl(std::basic_istream<char> &reader, T *&data, size_t &npts, size_t &dim,
-                                    size_t &rounded_dim, size_t offset = 0) {
-    int npts_i32, dim_i32;
-    reader.seekg(offset, reader.beg);
-    reader.read((char *) &npts_i32, sizeof(int));
-    reader.read((char *) &dim_i32, sizeof(int));
-
-    npts = (unsigned) npts_i32;
-    dim = (unsigned) dim_i32;
-    rounded_dim = ROUND_UP(dim, 8);
-    LOG(INFO) << "Metadata: #pts = " << npts << ", #dims = " << dim << ", aligned_dim = " << rounded_dim << "...";
-    size_t allocSize = npts * rounded_dim * sizeof(T);
-    alloc_aligned(((void **) &data), allocSize, 8 * sizeof(T));
-
-    for (size_t i = 0; i < npts; i++) {
-      reader.read((char *) (data + i * rounded_dim), dim * sizeof(T));
-      memset(data + i * rounded_dim + dim, 0, (rounded_dim - dim) * sizeof(T));
-    }
-    LOG(INFO) << " Allocated " << allocSize << "bytes and copied data ";
-  }
-
-  template<typename T>
-  inline void load_aligned_bin(const std::string &bin_file, T *&data, size_t &npts, size_t &dim, size_t &rounded_dim,
-                               size_t offset = 0) {
-    LOG(INFO) << "Reading bin file " << bin_file << " at offset " << offset << "...";
-    std::ifstream reader(bin_file, std::ios::binary | std::ios::ate);
-    reader.seekg(0);
-
-    load_aligned_bin_impl(reader, data, npts, dim, rounded_dim, offset);
   }
 
   template<typename InType, typename OutType>
   void convert_types(const InType *srcmat, OutType *destmat, size_t npts, size_t dim) {
 #pragma omp parallel for schedule(static, 65536)
-    for (int64_t i = 0; i < (_s64) npts; i++) {
+    for (int64_t i = 0; i < (int64_t) npts; i++) {
       for (uint64_t j = 0; j < dim; j++) {
         destmat[i * dim + j] = (OutType) srcmat[i * dim + j];
       }
     }
-  }
-
-  template<typename T>
-  inline void load_aligned_bin(const std::string &bin_file, std::unique_ptr<T[]> &data, size_t &npts, size_t &dim,
-                               size_t &rounded_dim, size_t offset = 0) {
-    T *ptr;
-    load_aligned_bin<T>(bin_file, ptr, npts, dim, rounded_dim, offset);
-    data.reset(ptr);
   }
 
   template<typename T>
@@ -422,7 +288,7 @@ namespace pipeann {
     std::ofstream writer;  //(filename, std::ios::binary | std::ios::out);
     open_file_to_write(writer, filename);
     int npts_i32 = (int) npts, ndims_i32 = (int) ndims;
-    _u64 bytes_written = 2 * sizeof(uint32_t) + npts * ndims * sizeof(T);
+    uint64_t bytes_written = 2 * sizeof(uint32_t) + npts * ndims * sizeof(T);
     writer.seekp(offset, writer.beg);
     writer.write((char *) &npts_i32, sizeof(int));
     writer.write((char *) &ndims_i32, sizeof(int));
@@ -462,20 +328,31 @@ namespace pipeann {
       _mm_prefetch((const char *) vec + d, _MM_HINT_T0);
   }
 
-  // NOTE :: good efficiency when total_vec_size is integral multiple of 64
-  inline void prefetch_vector_l2(const char *vec, size_t vecsize) {
-    size_t max_prefetch_size = (vecsize / 64) * 64;
-    for (size_t d = 0; d < max_prefetch_size; d += 64)
-      _mm_prefetch((const char *) vec + d, _MM_HINT_T1);
-  }
-
-  // NOTE: Implementation in utils.cpp.
-  void block_convert(std::ofstream &writr, std::ifstream &readr, float *read_buf, _u64 npts, _u64 ndims);
-
   void normalize_data_file(const std::string &inFileName, const std::string &outFileName);
 
   template<typename T>
   Distance<T> *get_distance_function(Metric m);
+
+  struct Parameters {
+    uint32_t R = 0;              // maximum out-neighbors.
+    uint32_t L = 0;              // build L.
+    uint32_t C = 750;            // delete pruning capacity.
+    float alpha = 1.2f;          // alpha for Vamana.
+    uint32_t num_threads = 0;    // num_threads used.
+    bool saturate_graph = true;  // saturate graph during build (using kNN neighbors).
+    uint32_t beam_width = 4;     // insert beam width. (for SSD)
+
+    void set(uint32_t R, uint32_t L, uint32_t C, float alpha = 1.2, uint32_t num_threads = 0,
+             bool saturate_graph = true, uint32_t beam_width = 4) {
+      this->R = R;
+      this->L = L;
+      this->C = C;
+      this->alpha = alpha;
+      this->num_threads = num_threads;
+      this->beam_width = beam_width;
+      this->saturate_graph = saturate_graph;
+    }
+  };
 }  // namespace pipeann
 
 struct PivotContainer {

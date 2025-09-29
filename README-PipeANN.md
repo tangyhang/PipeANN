@@ -136,7 +136,7 @@ Then, PipeANN is ready! An example for SIFT100M on Ubuntu 22.04:
 
 ```bash
 # For Ubuntu 22.04, first install the dependencies:
-sudo apt install make cmake g++ libaio-dev libgoogle-perftools-dev clang-format libboost-all-dev libmkl-full-dev
+sudo apt install make cmake g++ libaio-dev libgoogle-perftools-dev clang-format libmkl-full-dev
 
 # Build io_uring.
 cd third_party/liburing
@@ -182,7 +182,7 @@ After these steps, you could run the benchmark scripts above by modifying hard-c
 Install the dependencies in Ubuntu:
 
 ```bash
-sudo apt install make cmake g++ libaio-dev libgoogle-perftools-dev clang-format libboost-all-dev libmkl-full-dev
+sudo apt install make cmake g++ libaio-dev libgoogle-perftools-dev clang-format libmkl-full-dev
 ```
 
 ### Build the Repository
@@ -213,9 +213,9 @@ bash ./build.sh
 
 If the datasets follow `ivecs` or `fvecs` format, you could transfer them into `bin` format using:
 ```bash
-build/tests/utils/bvecs_to_bin bigann_base.bvecs bigann.bin # for byte vecs (SIFT), bigann_base.bvecs -> bigann.bin
-build/tests/utils/fvecs_to_bin base.fvecs deep.bin # for float vecs (DEEP) base.fvecs -> deep.bin
-build/tests/utils/ivecs_to_bin idx_1000M.ivecs idx_1000M.ibin # for int vecs (SIFT groundtruth) idx_1000M.ivecs -> idx_1000M.ibin
+build/tests/utils/vecs_to_bin int8 bigann_base.bvecs bigann.bin # for int8/uint8 vecs (SIFT), bigann_base.bvecs -> bigann.bin
+build/tests/utils/vecs_to_bin float base.fvecs deep.bin # for float vecs (DEEP) base.fvecs -> deep.bin
+build/tests/utils/vecs_to_bin int32 idx_1000M.ibin # for int32/uint32 vecs (SIFT groundtruth) idx_1000M.ivecs -> idx_1000M.ibin
 ```
 
 We need `bin` for `base`, `query`, and `groundtruth`.
@@ -269,8 +269,8 @@ PipeANN uses the same on-disk index as DiskANN.
 
 ```bash
 # Usage:
-# build/tests/build_disk_index <data_type (float/int8/uint8)> <data_file.bin> <index_prefix_path> <R>  <L>  <B>  <M>  <T> <similarity metric (cosine/l2) case sensitive>. <single_file_index (0/1)>
-build/tests/build_disk_index uint8 /mnt/nvme/data/bigann/100M.bbin /mnt/nvme2/indices/bigann/100m 96 128 3.3 256 112 l2 0
+# build/tests/build_disk_index <data_type (float/int8/uint8)> <data_file.bin> <index_prefix_path> <R>  <L>  <PQ_bytes>  <M>  <T> <similarity metric (cosine/l2) case sensitive>. <single_file_index (0/1)>
+build/tests/build_disk_index uint8 /mnt/nvme/data/bigann/100M.bbin /mnt/nvme2/indices/bigann/100m 96 128 32 256 112 l2 0
 ```
 
 The final index files will share a prefix of `/mnt/nvme2/indices/bigann/100m`.
@@ -279,17 +279,17 @@ Parameter explanation:
 
 * R: maximum out-neighbors
 * L: candidate pool size during build (build in fact conducts vector searches to optimize graph edges)
-* B: in-memory PQ-compressed vector size. Our goal is to use 32 bytes per vector; higher-dimensional vectors might require more bytes.
+* PQ_bytes: Bytes per PQ vector. We use 32 bytes for the three datasets; higher-dimensional vectors might require more bytes.
 * M: maximum memory used during build, 256GB is sufficient for the 100M index to be built totally in memory.
 * T: number of threads used during build. Our machine has 112 threads.
 
 We use the following parameters when building indexes:
 
-| Dataset       | type | R  | L | B | M | T | similarity
+| Dataset       | type | R  | L | PQ_bytes | M | T | similarity
 |---------------|---|---|---|---|---| --- | --- 
-| SIFT/DEEP/SPACEV100M | uint8/float/int8 | 96 | 128 | 3.3 | 256 | 112 | L2
-| SIFT1B   | uint8 | 128 |  200 | 33 | 500 | 112 | L2
-| SPACEV1B | int8 | 128 | 200  | 43 | 500 | 112 | L2
+| SIFT/DEEP/SPACEV100M | uint8/float/int8 | 96 | 128 | 32 | 256 | 112 | L2
+| SIFT1B   | uint8 | 128 |  200 | 32 | 500 | 112 | L2
+| SPACEV1B | int8 | 128 | 200  | 32 | 500 | 112 | L2
 
 ### Build In-Memory Index for PipeANN
 

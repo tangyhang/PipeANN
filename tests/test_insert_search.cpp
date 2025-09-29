@@ -8,7 +8,7 @@
 #include <omp.h>
 #include <string.h>
 #include <time.h>
-#include <timer.h>
+#include "utils/timer.h"
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -19,7 +19,7 @@
 #include "aux_utils.h"
 #include "index.h"
 #include "math_utils.h"
-#include "partition_and_pq.h"
+#include "partition.h"
 #include "utils.h"
 
 #include <sys/mman.h>
@@ -93,7 +93,7 @@ inline uint64_t save_bin_test(const std::string &filename, T *id, float *dist, s
 }
 
 template<typename T, typename TagT>
-void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int recall_at, _u32 mem_L, _u64 L,
+void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int recall_at, uint32_t mem_L, uint64_t L,
                         uint32_t beam_width, pipeann::DynamicSSDIndex<T, TagT> &sync_index, std::string &truthset_file,
                         bool merged, bool calRecall, double &disk_io) {
   if (NUM_SEARCH_THREADS == 0) {
@@ -115,8 +115,8 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int 
   float *query_result_dists = new float[recall_at * query_num];
   TagT *query_result_tags = new TagT[recall_at * query_num];
 
-  for (_u32 q = 0; q < query_num; q++) {
-    for (_u32 r = 0; r < (_u32) recall_at; r++) {
+  for (uint32_t q = 0; q < query_num; q++) {
+    for (uint32_t r = 0; r < (uint32_t) recall_at; r++) {
       query_result_tags[q * recall_at + r] = std::numeric_limits<TagT>::max();
       query_result_dists[q * recall_at + r] = std::numeric_limits<float>::max();
     }
@@ -163,12 +163,12 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int 
   std::sort(latency_stats.begin(), latency_stats.end());
   std::cerr << std::setw(4) << L << std::setw(12) << qps << std::setw(18)
             << ((float) std::accumulate(latency_stats.begin(), latency_stats.end(), 0.0f)) / (float) query_num
-            << std::setw(12) << (float) latency_stats[(_u64) (0.50 * ((double) query_num))] << std::setw(12)
-            << (float) latency_stats[(_u64) (0.90 * ((double) query_num))] << std::setw(12)
-            << (float) latency_stats[(_u64) (0.95 * ((double) query_num))] << std::setw(12)
-            << (float) latency_stats[(_u64) (0.99 * ((double) query_num))] << std::setw(12)
-            << (float) latency_stats[(_u64) (0.999 * ((double) query_num))] << std::setw(12) << recall << std::setw(12)
-            << mean_ios << std::endl;
+            << std::setw(12) << (float) latency_stats[(uint64_t) (0.50 * ((double) query_num))] << std::setw(12)
+            << (float) latency_stats[(uint64_t) (0.90 * ((double) query_num))] << std::setw(12)
+            << (float) latency_stats[(uint64_t) (0.95 * ((double) query_num))] << std::setw(12)
+            << (float) latency_stats[(uint64_t) (0.99 * ((double) query_num))] << std::setw(12)
+            << (float) latency_stats[(uint64_t) (0.999 * ((double) query_num))] << std::setw(12) << recall
+            << std::setw(12) << mean_ios << std::endl;
 
   LOG(INFO) << "search current time: " << current_time;
   disk_io = mean_ios;
@@ -193,7 +193,7 @@ void insertion_kernel(T *data_load, pipeann::DynamicSSDIndex<T, TagT> &sync_inde
   std::atomic_size_t success(0);
 
 #pragma omp parallel for num_threads(NUM_INSERT_THREADS)
-  for (_s64 i = 0; i < (_s64) insert_vec.size(); i++) {
+  for (int64_t i = 0; i < (int64_t) insert_vec.size(); i++) {
     pipeann::Timer insert_timer;
     sync_index.insert(data_load + dim * i, insert_vec[i]);
     success++;
@@ -239,16 +239,11 @@ void get_trace(std::string data_bin, uint64_t l_start, uint64_t r_start, uint64_
 template<typename T, typename TagT>
 void update(const std::string &data_bin, const unsigned L_disk, int vecs_per_step, int num_steps,
             const std::string &index_prefix, const std::string &query_file, const std::string &truthset_file,
-            size_t truthset_l_offset, const int recall_at, const std::vector<_u64> &Lsearch, const unsigned beam_width,
-            const uint32_t search_beam_width, const uint32_t search_mem_L, pipeann::Distance<T> *dist_cmp) {
+            size_t truthset_l_offset, const int recall_at, const std::vector<uint64_t> &Lsearch,
+            const unsigned beam_width, const uint32_t search_beam_width, const uint32_t search_mem_L,
+            pipeann::Distance<T> *dist_cmp) {
   pipeann::Parameters paras;
-  paras.Set<unsigned>("L_disk", L_disk);
-  paras.Set<unsigned>("R_disk", 0);
-  paras.Set<float>("alpha_disk", 1.2);
-  paras.Set<unsigned>("C", 384);
-  paras.Set<unsigned>("beamwidth", beam_width);
-  paras.Set<unsigned>("nodes_to_cache", 0);
-  paras.Set<unsigned>("num_threads", NUM_SEARCH_THREADS + NUM_INSERT_THREADS);
+  paras.set(0, L_disk, 384, 1.2, NUM_SEARCH_THREADS + NUM_INSERT_THREADS, true, beam_width);
   std::vector<T> data_load;
   size_t dim{};
 

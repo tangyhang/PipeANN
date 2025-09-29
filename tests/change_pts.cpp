@@ -1,8 +1,8 @@
 #include <omp.h>
 #include <cstring>
 #include <ctime>
-#include <timer.h>
-#include "log.h"
+#include "utils/timer.h"
+#include "utils/log.h"
 #include "utils.h"
 
 #include <sys/mman.h>

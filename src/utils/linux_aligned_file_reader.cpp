@@ -98,6 +98,10 @@ void LinuxAlignedFileReader::deregister_all_threads() {
   return;
 }
 
+void LinuxAlignedFileReader::register_buf(void *buf, uint64_t buf_size, int mrid) {
+  return;
+}
+
 void LinuxAlignedFileReader::open(const std::string &fname, bool enable_writes = false, bool enable_create = false) {
   int flags = O_DIRECT | O_LARGEFILE | O_RDWR;
   if (enable_create) {
@@ -237,7 +241,7 @@ void LinuxAlignedFileReader::poll_wait(void *ctx) {
 #include <cstdio>
 #include <iostream>
 #include "aligned_file_reader.h"
-#include "tsl/robin_map.h"
+#include "utils/tsl/robin_map.h"
 #include "utils.h"
 #define MAX_EVENTS 256
 
@@ -342,6 +346,10 @@ void LinuxAlignedFileReader::deregister_thread() {
 }
 
 void LinuxAlignedFileReader::deregister_all_threads() {
+}
+
+void LinuxAlignedFileReader::register_buf(void *buf, uint64_t buf_size, int mrid) {
+  return;
 }
 
 void LinuxAlignedFileReader::open(const std::string &fname, bool enable_writes = false, bool enable_create = false) {

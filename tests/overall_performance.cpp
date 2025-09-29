@@ -7,7 +7,7 @@
 #include <omp.h>
 #include <string.h>
 #include <time.h>
-#include <timer.h>
+#include "utils/timer.h"
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -18,14 +18,14 @@
 #include "aux_utils.h"
 #include "index.h"
 #include "math_utils.h"
-#include "partition_and_pq.h"
+#include "partition.h"
 #include "utils.h"
 
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define MERGE_ROUND 20
+#define MERGE_ROUND 1
 #define MERGE_IO_THRESHOLD 1.2
 #define NUM_INSERT_THREADS 10
 #define NUM_MERGE_THREADS 20
@@ -95,7 +95,7 @@ inline uint64_t save_bin_test(const std::string &filename, T *id, float *dist, s
 }
 
 template<typename T, typename TagT>
-void sync_search_kernel(T *query, size_t query_num, size_t query_aligned_dim, const int recall_at, _u64 L,
+void sync_search_kernel(T *query, size_t query_num, size_t query_dim, const int recall_at, uint64_t L,
                         uint32_t beam_width, pipeann::DynamicSSDIndex<T, TagT> &sync_index, std::string &truthset_file,
                         bool merged, bool calRecall, double &disk_io) {
   unsigned *gt_ids = NULL;
@@ -114,8 +114,8 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_aligned_dim, co
   float *query_result_dists = new float[recall_at * query_num];
   TagT *query_result_tags = new TagT[recall_at * query_num];
 
-  for (_u32 q = 0; q < query_num; q++) {
-    for (_u32 r = 0; r < (_u32) recall_at; r++) {
+  for (uint32_t q = 0; q < query_num; q++) {
+    for (uint32_t r = 0; r < (uint32_t) recall_at; r++) {
       query_result_tags[q * recall_at + r] = std::numeric_limits<TagT>::max();
       query_result_dists[q * recall_at + r] = std::numeric_limits<float>::max();
     }
@@ -136,7 +136,7 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_aligned_dim, co
   for (int64_t i = 0; i < (int64_t) query_num; i++) {
     auto qs = std::chrono::high_resolution_clock::now();
     // stats[i].n_current_used = 8;
-    sync_index.search(query + i * query_aligned_dim, recall_at, 0, L, beam_width, query_result_tags + i * recall_at,
+    sync_index.search(query + i * query_dim, recall_at, 0, L, beam_width, query_result_tags + i * recall_at,
                       query_result_dists + i * recall_at, stats + i, true);
 
     auto qe = std::chrono::high_resolution_clock::now();
@@ -164,12 +164,12 @@ void sync_search_kernel(T *query, size_t query_num, size_t query_aligned_dim, co
   std::sort(latency_stats.begin(), latency_stats.end());
   std::cout << std::setw(4) << L << std::setw(12) << qps << std::setw(18)
             << ((float) std::accumulate(latency_stats.begin(), latency_stats.end(), 0.0f)) / (float) query_num
-            << std::setw(12) << (float) latency_stats[(_u64) (0.50 * ((double) query_num))] << std::setw(12)
-            << (float) latency_stats[(_u64) (0.90 * ((double) query_num))] << std::setw(12)
-            << (float) latency_stats[(_u64) (0.95 * ((double) query_num))] << std::setw(12)
-            << (float) latency_stats[(_u64) (0.99 * ((double) query_num))] << std::setw(12)
-            << (float) latency_stats[(_u64) (0.999 * ((double) query_num))] << std::setw(12) << recall << std::setw(12)
-            << mean_ios << std::endl;
+            << std::setw(12) << (float) latency_stats[(uint64_t) (0.50 * ((double) query_num))] << std::setw(12)
+            << (float) latency_stats[(uint64_t) (0.90 * ((double) query_num))] << std::setw(12)
+            << (float) latency_stats[(uint64_t) (0.95 * ((double) query_num))] << std::setw(12)
+            << (float) latency_stats[(uint64_t) (0.99 * ((double) query_num))] << std::setw(12)
+            << (float) latency_stats[(uint64_t) (0.999 * ((double) query_num))] << std::setw(12) << recall
+            << std::setw(12) << mean_ios << std::endl;
   disk_io = mean_ios;
 
   delete[] query_result_dists;
@@ -190,7 +190,7 @@ void deletion_kernel(T *data_load, pipeann::DynamicSSDIndex<T, TagT> &sync_index
   std::vector<double> delete_latencies(npts, 0);
   std::cout << "Begin Delete" << std::endl;
 #pragma omp parallel for num_threads(NUM_DELETE_THREADS)
-  for (_s64 i = 0; i < (_s64) delete_vec.size(); i++) {
+  for (int64_t i = 0; i < (int64_t) delete_vec.size(); i++) {
     pipeann::Timer delete_timer;
     pipeann::QueryStats stats;
     sync_index.lazy_delete(delete_vec[i]);
@@ -213,7 +213,7 @@ void insertion_kernel(T *data_load, pipeann::DynamicSSDIndex<T, TagT> &sync_inde
   std::cout << "Begin Insert" << std::endl;
   std::atomic_size_t success(0);
 #pragma omp parallel for num_threads(NUM_INSERT_THREADS)
-  for (_s64 i = 0; i < (_s64) insert_vec.size(); i++) {
+  for (int64_t i = 0; i < (int64_t) insert_vec.size(); i++) {
     pipeann::Timer insert_timer;
     sync_index.insert(data_load + aligned_dim * i, insert_vec[i]);
     success++;
@@ -256,15 +256,9 @@ void get_trace(std::string data_bin, uint64_t l_start, uint64_t r_start, uint64_
 template<typename T, typename TagT>
 void update(const std::string &data_bin, const unsigned L_disk, int step, const unsigned nodes_to_cache,
             std::string &save_path, const std::string &query_file, std::string &truthset_file, const int recall_at,
-            std::vector<_u64> Lsearch, const unsigned beam_width, pipeann::Distance<T> *dist_cmp) {
+            std::vector<uint64_t> Lsearch, const unsigned beam_width, pipeann::Distance<T> *dist_cmp) {
   pipeann::Parameters paras;
-  paras.Set<unsigned>("L_disk", L_disk);
-  paras.Set<unsigned>("R_disk", 0);
-  paras.Set<float>("alpha_disk", 1.2);
-  paras.Set<unsigned>("C", 384);
-  paras.Set<unsigned>("beamwidth", beam_width);
-  paras.Set<unsigned>("nodes_to_cache", 0);
-  paras.Set<unsigned>("num_threads", 128);  // more for less contention of thread data.
+  paras.set(0, L_disk, 384, 1.2, 128, true, beam_width);  // 128 threads for less contention.
   std::vector<T> data_load;
   size_t dim{}, aligned_dim{};
 
@@ -272,11 +266,11 @@ void update(const std::string &data_bin, const unsigned L_disk, int step, const 
 
   std::cout << "Loading queries " << std::endl;
   T *query = NULL;
-  size_t query_num, query_dim, query_aligned_dim;
-  pipeann::load_aligned_bin<T>(query_file, query, query_num, query_dim, query_aligned_dim);
+  size_t query_num, query_dim;
+  pipeann::load_bin<T>(query_file, query, query_num, query_dim);
 
   dim = query_dim;
-  aligned_dim = query_aligned_dim;
+  aligned_dim = query_dim;
   pipeann::Metric metric = pipeann::Metric::L2;
   pipeann::DynamicSSDIndex<T, TagT> sync_index(paras, save_path, save_path + "_merge", dist_cmp, metric);
 
@@ -291,8 +285,8 @@ void update(const std::string &data_bin, const unsigned L_disk, int step, const 
   std::vector<double> ref_diskio;
   for (uint64_t j = 0; j < Lsearch.size(); ++j) {
     double diskio = 0;
-    sync_search_kernel(query, query_num, query_aligned_dim, recall_at, Lsearch[j], beam_width, sync_index,
-                       currentFileName, false, true, diskio);
+    sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[j], beam_width, sync_index, currentFileName,
+                       false, true, diskio);
     ref_diskio.push_back(diskio);
   }
 
@@ -327,8 +321,8 @@ void update(const std::string &data_bin, const unsigned L_disk, int step, const 
       } else if (insert_status == std::future_status::timeout || delete_status == std::future_status::timeout) {
         ShowMemoryStatus(sync_index._disk_index_prefix_in);
         double dummy;
-        sync_search_kernel(query, query_num, query_aligned_dim, recall_at, Lsearch[0], beam_width, sync_index,
-                           currentFileName, false, false, dummy);
+        sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[0], beam_width, sync_index, currentFileName,
+                           false, false, dummy);
         total_queries += query_num;
         std::cout << "Queries processed: " << total_queries << std::endl;
       }
@@ -350,8 +344,8 @@ void update(const std::string &data_bin, const unsigned L_disk, int step, const 
     std::vector<double> disk_ios;
     for (uint64_t j = 0; j < Lsearch.size(); ++j) {
       double diskio = 0;
-      sync_search_kernel(query, query_num, query_aligned_dim, recall_at, Lsearch[j], beam_width, sync_index,
-                         currentFileName, false, true, diskio);
+      sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[j], beam_width, sync_index, currentFileName,
+                         false, true, diskio);
       disk_ios.push_back(diskio);
     }
 
@@ -369,15 +363,15 @@ void update(const std::string &data_bin, const unsigned L_disk, int step, const 
         merge_status = merge_future.wait_for(std::chrono::seconds(10));
         double dummy = 0;
         ShowMemoryStatus(sync_index._disk_index_prefix_in);
-        sync_search_kernel(query, query_num, query_aligned_dim, recall_at, Lsearch[0], beam_width, sync_index,
-                           currentFileName, false, false, dummy);
+        sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[0], beam_width, sync_index, currentFileName,
+                           false, false, dummy);
       } while (merge_status != std::future_status::ready);
 
       ref_diskio.clear();
       for (uint32_t j = 0; j < Lsearch.size(); ++j) {
         double diskio;
-        sync_search_kernel(query, query_num, query_aligned_dim, recall_at, Lsearch[j], beam_width, sync_index,
-                           currentFileName, false, true, diskio);
+        sync_search_kernel(query, query_num, query_dim, recall_at, Lsearch[j], beam_width, sync_index, currentFileName,
+                           false, true, diskio);
         ref_diskio.push_back(diskio);
       }
       std::cout << "Merge finished " << std::endl;

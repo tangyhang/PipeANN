@@ -1,5 +1,5 @@
 #include "aligned_file_reader.h"
-#include "libcuckoo/cuckoohash_map.hh"
+#include "utils/libcuckoo/cuckoohash_map.hh"
 #include "ssd_index.h"
 #include <malloc.h>
 #include <algorithm>
@@ -11,10 +11,10 @@
 #include <cstdint>
 #include <limits>
 #include <tuple>
-#include "timer.h"
-#include "tsl/robin_map.h"
+#include "utils/timer.h"
+#include "utils/tsl/robin_map.h"
 #include "utils.h"
-#include "v2/page_cache.h"
+#include "utils/page_cache.h"
 
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -83,7 +83,7 @@ namespace pipeann {
             continue;
           // djk = dist(p.id, pool[t.id])
           float djk;
-          compute_pq_dists(p.id, &(pool[t].id), &djk, 1, scratch);
+          nbr_handler->compute_dists(p.id, &(pool[t].id), 1, &djk, scratch);
           // LOG(INFO) << pool[t].distance << " " << djk << " " << alpha << " " << result_set.size();
           occlude_factor[t] = (std::max)(occlude_factor[t], pool[t].distance / djk);
         }
@@ -185,7 +185,8 @@ namespace pipeann {
         continue;
       }
       auto &p = pool[start];
-      compute_pq_dists(p.id, ids.data() + start + 1, dists.data() + start + 1, pool.size() - start - 1, scratch);
+      nbr_handler->compute_dists(p.id, ids.data() + start + 1, pool.size() - start - 1, dists.data() + start + 1,
+                                 scratch);
       for (uint32_t t = start + 1; t < pool.size(); t++) {
         if (pool[t].distance / dists[t] > alpha) {
           to_evict = t;
@@ -220,7 +221,7 @@ namespace pipeann {
     // SPACEV1B frequently inserts medoid, which can not be excluded by triangular ineq.
     size_t medoid_threshold = result.size() * 3 / 4;
     for (size_t i = 0; i < result.size(); ++i) {
-      if (i > medoid_threshold && result[i].id == medoids[0]) {
+      if (i > medoid_threshold && result[i].id == medoid) {
         continue;
       }
       pruned_list.emplace_back(result[i].id);
@@ -236,6 +237,6 @@ namespace pipeann {
   }
 
   template class SSDIndex<float>;
-  template class SSDIndex<_s8>;
-  template class SSDIndex<_u8>;
+  template class SSDIndex<int8_t>;
+  template class SSDIndex<uint8_t>;
 }  // namespace pipeann

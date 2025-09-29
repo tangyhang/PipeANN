@@ -5,4 +5,8 @@ indices/
 data/*
 data-example/*
 figures/*
-scripts/tests/drop_cache
+scripts/tests-pipeann/drop_cache
+pipeann/*.so
+pipeann/__pycache__/*
+pipeann.egg-info/
+dist/

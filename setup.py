@@ -54,9 +54,6 @@ class CMakeBuild(build_ext):
         if "CMAKE_ARGS" in os.environ:
             cmake_args += [item for item in os.environ["CMAKE_ARGS"].split(" ") if item]
 
-        # In this example, we pass in the version to C++. You might not need to.
-        cmake_args += [f"-DEXAMPLE_VERSION_INFO={self.distribution.get_version()}"]
-
         if self.compiler.compiler_type != "msvc":
             # Using Ninja-build since it a) is available as a wheel and b)
             # multithreads automatically. MSVC would require all variables be
@@ -126,12 +123,17 @@ class CMakeBuild(build_ext):
 # logic and declaration, and simpler if you include description/version in a file.
 setup(
     name="pipeann",
-    version="0.2.10",
+    version="0.2.0",
     author="Hao Guo",
     author_email="gh23@mails.tsinghua.edu.cn",
-    ext_modules=[CMakeExtension("pipeann")],
+    description="Python wrapper for PipeANN",
+    long_description="",
+    # Tell setuptools to look for packages in the python directory
+    packages=["pipeann"],
+    # Tell setuptools that the root package is in the python directory
+    package_dir={"": "."},
+    ext_modules=[CMakeExtension("pipeann.C", sourcedir=".")],
     cmdclass={"build_ext": CMakeBuild},
     zip_safe=False,
-    # extras_require={"test": ["pytest>=6.0"]},
     python_requires=">=3.7",
 )

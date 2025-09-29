@@ -9,92 +9,20 @@
 #include <cblas.h>
 
 #include "aux_utils.h"
-#include "cached_io.h"
+#include "utils/cached_io.h"
 #include "index.h"
+#include "nbr/pq_nbr.h"
 #include "omp.h"
-#include "partition_and_pq.h"
-#include "percentile_stats.h"
+#include "partition.h"
+#include "utils/percentile_stats.h"
 #include "ssd_index.h"
 #include "utils.h"
 
 #include "ssd_index.h"
-#include "tsl/robin_set.h"
+#include "utils/tsl/robin_set.h"
 #include "utils.h"
-
-#define NUM_KMEANS 15
 
 namespace pipeann {
-
-  void add_new_file_to_single_index(std::string index_file, std::string new_file) {
-    std::unique_ptr<_u64[]> metadata;
-    _u64 nr, nc;
-    pipeann::load_bin<_u64>(index_file, metadata, nr, nc, 0);
-    if (nc != 1) {
-      LOG(ERROR) << "Error, index file specified does not have correct metadata. ";
-      crash();
-    }
-    size_t index_ending_offset = metadata[nr - 1];
-    _u64 read_blk_size = 64 * 1024 * 1024;
-    cached_ofstream writer(index_file, read_blk_size, index_ending_offset);
-    _u64 check_file_size = get_file_size(index_file);
-    if (check_file_size != index_ending_offset) {
-      LOG(ERROR) << "Error, index file specified does not have correct metadata "
-                    "(last entry must match the filesize). ";
-      crash();
-    }
-
-    cached_ifstream reader(new_file, read_blk_size);
-    size_t fsize = reader.get_file_size();
-    if (fsize == 0) {
-      LOG(ERROR) << "Error, new file specified is empty. Not appending.";
-      crash();
-    }
-
-    size_t num_blocks = DIV_ROUND_UP(fsize, read_blk_size);
-    char *dump = new char[read_blk_size];
-    for (_u64 i = 0; i < num_blocks; i++) {
-      size_t cur_block_size = read_blk_size > fsize - (i * read_blk_size) ? fsize - (i * read_blk_size) : read_blk_size;
-      reader.read(dump, cur_block_size);
-      writer.write(dump, cur_block_size);
-    }
-    reader.close();
-    writer.close();
-
-    delete[] dump;
-    std::vector<_u64> new_meta;
-    for (_u64 i = 0; i < nr; i++)
-      new_meta.push_back(metadata[i]);
-    new_meta.push_back(metadata[nr - 1] + fsize);
-
-    pipeann::save_bin<_u64>(index_file, new_meta.data(), new_meta.size(), 1, 0);
-  }
-
-  double get_memory_budget(double search_ram_budget) {
-    double final_index_ram_limit = search_ram_budget;
-    if (search_ram_budget - SPACE_FOR_CACHED_NODES_IN_GB > THRESHOLD_FOR_CACHING_IN_GB) {  // slack for space used by
-                                                                                           // cached nodes
-      final_index_ram_limit = search_ram_budget - SPACE_FOR_CACHED_NODES_IN_GB;
-    }
-    return final_index_ram_limit * 1024 * 1024 * 1024;
-  }
-
-  double get_memory_budget(const std::string &mem_budget_str) {
-    double search_ram_budget = atof(mem_budget_str.c_str());
-    return get_memory_budget(search_ram_budget);
-  }
-
-  size_t calculate_num_pq_chunks(double final_index_ram_limit, size_t points_num, uint32_t dim) {
-    size_t num_pq_chunks = (size_t) (std::floor)(_u64(final_index_ram_limit / (double) points_num));
-
-    LOG(INFO) << "Calculated num_pq_chunks :" << num_pq_chunks;
-    num_pq_chunks = num_pq_chunks <= 0 ? 1 : num_pq_chunks;
-    num_pq_chunks = num_pq_chunks > dim ? dim : num_pq_chunks;
-    num_pq_chunks = num_pq_chunks > MAX_PQ_CHUNKS ? MAX_PQ_CHUNKS : num_pq_chunks;
-
-    LOG(INFO) << "Compressing " << dim << "-dimensional data into " << num_pq_chunks << " bytes per vector.";
-    return num_pq_chunks;
-  }
-
   double calculate_recall(unsigned num_queries, unsigned *gold_std, float *gs_dist, unsigned dim_gs,
                           unsigned *our_results, unsigned dim_or, unsigned recall_at) {
     double total_recall = 0;
@@ -197,22 +125,22 @@ namespace pipeann {
   }
 
   int merge_shards(const std::string &vamana_prefix, const std::string &vamana_suffix, const std::string &idmaps_prefix,
-                   const std::string &idmaps_suffix, const _u64 nshards, unsigned max_degree,
+                   const std::string &idmaps_suffix, const uint64_t nshards, unsigned max_degree,
                    const std::string &output_vamana, const std::string &medoids_file) {
     // Read ID maps
     std::vector<std::string> vamana_names(nshards);
     std::vector<std::vector<unsigned>> idmaps(nshards);
-    for (_u64 shard = 0; shard < nshards; shard++) {
+    for (uint64_t shard = 0; shard < nshards; shard++) {
       vamana_names[shard] = vamana_prefix + std::to_string(shard) + vamana_suffix;
       read_idmap(idmaps_prefix + std::to_string(shard) + idmaps_suffix, idmaps[shard]);
     }
 
     // find max node id
-    _u64 nnodes = 0;
-    _u64 nelems = 0;
+    uint64_t nnodes = 0;
+    uint64_t nelems = 0;
     for (auto &idmap : idmaps) {
       for (auto &id : idmap) {
-        nnodes = std::max(nnodes, (_u64) id);
+        nnodes = std::max(nnodes, (uint64_t) id);
       }
       nelems += idmap.size();
     }
@@ -222,11 +150,11 @@ namespace pipeann {
     // compute inverse map: node -> shards
     std::vector<std::pair<unsigned, unsigned>> node_shard;
     node_shard.reserve(nelems);
-    for (_u64 shard = 0; shard < nshards; shard++) {
+    for (uint64_t shard = 0; shard < nshards; shard++) {
       LOG(INFO) << "Creating inverse map -- shard #" << shard;
-      for (_u64 idx = 0; idx < idmaps[shard].size(); idx++) {
-        _u64 node_id = idmaps[shard][idx];
-        node_shard.push_back(std::make_pair((_u32) node_id, (_u32) shard));
+      for (uint64_t idx = 0; idx < idmaps[shard].size(); idx++) {
+        uint64_t node_id = idmaps[shard][idx];
+        node_shard.push_back(std::make_pair((uint32_t) node_id, (uint32_t) shard));
       }
     }
     std::sort(node_shard.begin(), node_shard.end(), [](const auto &left, const auto &right) {
@@ -236,7 +164,7 @@ namespace pipeann {
 
     // create cached vamana readers
     std::vector<cached_ifstream> vamana_readers(nshards);
-    for (_u64 i = 0; i < nshards; i++) {
+    for (uint64_t i = 0; i < nshards; i++) {
       vamana_readers[i].open(vamana_names[i], 1024 * 1048576);
       size_t expected_file_size;
       vamana_readers[i].read((char *) &expected_file_size, sizeof(uint64_t));
@@ -261,17 +189,17 @@ namespace pipeann {
 
     diskann_writer.write((char *) &output_width, sizeof(unsigned));
     std::ofstream medoid_writer(medoids_file.c_str(), std::ios::binary);
-    _u32 nshards_u32 = (_u32) nshards;
-    _u32 one_val = 1;
+    uint32_t nshards_u32 = (uint32_t) nshards;
+    uint32_t one_val = 1;
     medoid_writer.write((char *) &nshards_u32, sizeof(uint32_t));
     medoid_writer.write((char *) &one_val, sizeof(uint32_t));
 
-    _u64 vamana_index_frozen = 0;
-    for (_u64 shard = 0; shard < nshards; shard++) {
+    uint64_t vamana_index_frozen = 0;
+    for (uint64_t shard = 0; shard < nshards; shard++) {
       unsigned medoid;
       // read medoid
       vamana_readers[shard].read((char *) &medoid, sizeof(unsigned));
-      vamana_readers[shard].read((char *) &vamana_index_frozen, sizeof(_u64));
+      vamana_readers[shard].read((char *) &vamana_index_frozen, sizeof(uint64_t));
       assert(vamana_index_frozen == false);
       // rename medoid
       medoid = idmaps[shard][medoid];
@@ -281,7 +209,7 @@ namespace pipeann {
       if (shard == (nshards - 1))  //--> uncomment if running hierarchical
         diskann_writer.write((char *) &medoid, sizeof(unsigned));
     }
-    diskann_writer.write((char *) &merged_index_frozen, sizeof(_u64));
+    diskann_writer.write((char *) &merged_index_frozen, sizeof(uint64_t));
     medoid_writer.close();
 
     LOG(INFO) << "Starting merge";
@@ -321,7 +249,7 @@ namespace pipeann {
       vamana_readers[shard_id].read((char *) shard_nhood.data(), shard_nnbrs * sizeof(unsigned));
 
       // rename nodes
-      for (_u64 j = 0; j < shard_nnbrs; j++) {
+      for (uint64_t j = 0; j < shard_nnbrs; j++) {
         if (nhood_set[idmaps[shard_id][shard_nhood[j]]] == 0) {
           nhood_set[idmaps[shard_id][shard_nhood[j]]] = 1;
           final_nhood.emplace_back(idmaps[shard_id][shard_nhood[j]]);
@@ -350,15 +278,9 @@ namespace pipeann {
   }
 
   template<typename T>
-  int build_merged_vamana_index(std::string base_file, pipeann::Metric _compareMetric, bool single_file_index,
-                                unsigned L, unsigned R, double sampling_rate, double ram_budget,
-                                std::string mem_index_path, std::string medoids_file, std::string centroids_file,
-                                const char *tag_file) {
-    if (unlikely(single_file_index)) {
-      LOG(INFO) << "Single file index is not supported for merged Vamana index, setting to false.";
-      single_file_index = false;
-    }
-
+  int build_merged_vamana_index(std::string base_file, pipeann::Metric _compareMetric, unsigned L, unsigned R,
+                                double sampling_rate, double ram_budget, std::string mem_index_path,
+                                std::string medoids_file, std::string centroids_file, const char *tag_file) {
     size_t base_num, base_dim;
     pipeann::get_bin_metadata(base_file, base_num, base_dim);
 
@@ -366,12 +288,7 @@ namespace pipeann {
     if (full_index_ram < ram_budget * 1024 * 1024 * 1024) {
       LOG(INFO) << "Full index fits in RAM, building in one shot";
       pipeann::Parameters paras;
-      paras.Set<unsigned>("L", (unsigned) L);
-      paras.Set<unsigned>("R", (unsigned) R);
-      paras.Set<unsigned>("C", 750);
-      paras.Set<float>("alpha", 1.2f);
-      paras.Set<bool>("saturate_graph", 1);  // was 0 earlier.
-      paras.Set<std::string>("save_path", mem_index_path);
+      paras.set(R, L, 750, 1.2, 0, true);
 
       bool tags_enabled;
       if (tag_file == nullptr)
@@ -380,7 +297,7 @@ namespace pipeann {
         tags_enabled = true;
 
       std::unique_ptr<pipeann::Index<T>> _pvamanaIndex = std::unique_ptr<pipeann::Index<T>>(
-          new pipeann::Index<T>(_compareMetric, base_dim, base_num, false, single_file_index, tags_enabled));
+          new pipeann::Index<T>(_compareMetric, base_dim, base_num, false, false, tags_enabled));
       if (tags_enabled)
         _pvamanaIndex->build(base_file.c_str(), base_num, paras, tag_file);
       else
@@ -390,12 +307,6 @@ namespace pipeann {
       std::remove(medoids_file.c_str());
       std::remove(centroids_file.c_str());
       return 0;
-    }
-
-    if (single_file_index || tag_file != nullptr) {
-      LOG(INFO) << "Cannot build merged index if single_file_index is "
-                   "required or if tags are specified.";
-      return 1;
     }
 
     std::string merged_index_prefix = mem_index_path + "_tempFiles";
@@ -410,18 +321,11 @@ namespace pipeann {
       std::string shard_index_file = merged_index_prefix + "_subshard-" + std::to_string(p) + "_mem.index";
 
       pipeann::Parameters paras;
-      paras.Set<unsigned>("L", L);
-      paras.Set<unsigned>("R", (2 * (R / 3)));
-      paras.Set<unsigned>("C", 750);
-      paras.Set<float>("alpha", 1.2f);
-      paras.Set<bool>("saturate_graph", 0);
-      paras.Set<std::string>("save_path", shard_index_file);
-
-      _u64 shard_base_dim, shard_base_pts;
+      paras.set(2 * R / 3, L, 750, 1.2, 0, false);
+      uint64_t shard_base_dim, shard_base_pts;
       get_bin_metadata(shard_base_file, shard_base_pts, shard_base_dim);
       std::unique_ptr<pipeann::Index<T>> _pvamanaIndex = std::unique_ptr<pipeann::Index<T>>(
-          new pipeann::Index<T>(_compareMetric, shard_base_dim, shard_base_pts, false,
-                                single_file_index));  // TODO: Single?
+          new pipeann::Index<T>(_compareMetric, shard_base_dim, shard_base_pts, false, false));
       _pvamanaIndex->build(shard_base_file.c_str(), shard_base_pts, paras);
       _pvamanaIndex->save(shard_index_file.c_str());
     }
@@ -449,16 +353,15 @@ namespace pipeann {
   // mem_index_file, and the entire disk index will be in output_file.
   template<typename T, typename TagT>
   void create_disk_layout(const std::string &mem_index_file, const std::string &base_file, const std::string &tag_file,
-                          const std::string &pq_pivots_file, const std::string &pq_vectors_file, bool single_file_index,
                           const std::string &output_file) {
     unsigned npts, ndims;
 
     // amount to read or write in one shot
-    _u64 read_blk_size = 64 * 1024 * 1024;
-    _u64 write_blk_size = read_blk_size;
+    uint64_t read_blk_size = 64 * 1024 * 1024;
+    uint64_t write_blk_size = read_blk_size;
     cached_ifstream base_reader;
     std::ifstream vamana_reader;
-    _u64 base_offset = 0, vamana_offset = 0, tags_offset = 0;
+    uint64_t base_offset = 0, vamana_offset = 0, tags_offset = 0;
     bool tags_enabled = false;
 
     base_reader.open(base_file, read_blk_size);
@@ -484,17 +387,17 @@ namespace pipeann {
 
     vamana_reader.read((char *) &index_file_size, sizeof(uint64_t));
 
-    _u64 vamana_frozen_num = false, vamana_frozen_loc = 0;
+    uint64_t vamana_frozen_num = false, vamana_frozen_loc = 0;
     vamana_reader.read((char *) &width_u32, sizeof(unsigned));
     vamana_reader.read((char *) &medoid_u32, sizeof(unsigned));
-    vamana_reader.read((char *) &vamana_frozen_num, sizeof(_u64));
+    vamana_reader.read((char *) &vamana_frozen_num, sizeof(uint64_t));
     // compute
-    _u64 medoid, max_node_len, nnodes_per_sector;
-    npts_64 = (_u64) npts;
-    medoid = (_u64) medoid_u32;
+    uint64_t medoid, max_node_len, nnodes_per_sector;
+    npts_64 = (uint64_t) npts;
+    medoid = (uint64_t) medoid_u32;
     if (vamana_frozen_num == 1)
       vamana_frozen_loc = medoid;
-    max_node_len = (((_u64) width_u32 + 1) * sizeof(unsigned)) + (ndims_64 * sizeof(T));
+    max_node_len = (((uint64_t) width_u32 + 1) * sizeof(unsigned)) + (ndims_64 * sizeof(T));
     nnodes_per_sector = SECTOR_LEN / max_node_len;  // 0 if max_node_len > SECTOR_LEN
 
     LOG(INFO) << "medoid: " << medoid << "B";
@@ -509,11 +412,11 @@ namespace pipeann {
     unsigned *nhood_buf = (unsigned *) (node_buf.get() + (ndims_64 * sizeof(T)) + sizeof(unsigned));
 
     // number of sectors (1 for meta data)
-    _u64 n_sectors = nnodes_per_sector > 0 ? ROUND_UP(npts_64, nnodes_per_sector) / nnodes_per_sector
-                                           : npts_64 * DIV_ROUND_UP(max_node_len, SECTOR_LEN);
-    _u64 disk_index_file_size = (n_sectors + 1) * SECTOR_LEN;
+    uint64_t n_sectors = nnodes_per_sector > 0 ? ROUND_UP(npts_64, nnodes_per_sector) / nnodes_per_sector
+                                               : npts_64 * DIV_ROUND_UP(max_node_len, SECTOR_LEN);
+    uint64_t disk_index_file_size = (n_sectors + 1) * SECTOR_LEN;
 
-    std::vector<_u64> output_file_meta;
+    std::vector<uint64_t> output_file_meta;
     output_file_meta.push_back(npts_64);
     output_file_meta.push_back(ndims_64);
     output_file_meta.push_back(medoid);
@@ -530,15 +433,16 @@ namespace pipeann {
 
     std::unique_ptr<T[]> cur_node_coords = std::make_unique<T[]>(ndims_64);
     LOG(INFO) << "# sectors: " << n_sectors;
-    _u64 cur_node_id = 0;
+    uint64_t cur_node_id = 0;
 
     if (nnodes_per_sector > 0) {
-      for (_u64 sector = 0; sector < n_sectors; sector++) {
+      for (uint64_t sector = 0; sector < n_sectors; sector++) {
         if (sector % 100000 == 0) {
           LOG(INFO) << "Sector #" << sector << "written";
         }
         memset(sector_buf.get(), 0, SECTOR_LEN);
-        for (_u64 sector_node_id = 0; sector_node_id < nnodes_per_sector && cur_node_id < npts_64; sector_node_id++) {
+        for (uint64_t sector_node_id = 0; sector_node_id < nnodes_per_sector && cur_node_id < npts_64;
+             sector_node_id++) {
           memset(node_buf.get(), 0, max_node_len);
           // read cur node's nnbrs
           vamana_reader.read((char *) &nnbrs, sizeof(unsigned));
@@ -556,7 +460,7 @@ namespace pipeann {
           }
 
           // write coords of node first
-          //  T *node_coords = data + ((_u64) ndims_64 * cur_node_id);
+          //  T *node_coords = data + ((uint64_t) ndims_64 * cur_node_id);
           base_reader.read((char *) cur_node_coords.get(), sizeof(T) * ndims_64);
           memcpy(node_buf.get(), cur_node_coords.get(), ndims_64 * sizeof(T));
 
@@ -652,62 +556,27 @@ namespace pipeann {
     }
 
     output_file_meta.push_back(output_file_meta[output_file_meta.size() - 1] + tag_bytes_written);
-    pipeann::save_bin<_u64>(output_file, output_file_meta.data(), output_file_meta.size(), 1, 0);
+    pipeann::save_bin<uint64_t>(output_file, output_file_meta.data(), output_file_meta.size(), 1, 0);
     LOG(INFO) << "Output file written.";
   }
 
   template<typename T, typename TagT>
-  bool build_disk_index(const char *dataPath, const char *indexFilePath, const char *indexBuildParameters,
-                        pipeann::Metric _compareMetric, bool single_file_index, const char *tag_file) {
-    std::stringstream parser;
-    parser << std::string(indexBuildParameters);
-    std::string cur_param;
-    std::vector<std::string> param_list;
-    while (parser >> cur_param)
-      param_list.push_back(cur_param);
-
-    if (param_list.size() != 5 && param_list.size() != 6) {
-      LOG(INFO) << "Correct usage of parameters is: R (max degree)"
-                   " L (indexing list size, should be >= R) "
-                   " B (RAM limit of final index in GB) "
-                   " M (memory limit while indexing in GB)"
-                   " T (number of threads for indexing) "
-                   " [C (compression ratio for PQ. Overrides parameter value B)] ";
-      return false;
-    }
-
+  bool build_disk_index(const char *dataPath, const char *indexFilePath, uint32_t R, uint32_t L, uint32_t M,
+                        uint32_t num_threads, uint32_t bytes_per_nbr, pipeann::Metric _compareMetric,
+                        const char *tag_file, AbstractNeighbor<T> *nbr_handler) {
     std::string dataFilePath(dataPath);
     std::string index_prefix_path(indexFilePath);
-    std::string pq_pivots_path = index_prefix_path + "_pq_pivots.bin";
-    std::string pq_compressed_vectors_path = index_prefix_path + "_pq_compressed.bin";
     std::string mem_index_path = index_prefix_path + "_mem.index";
     std::string disk_index_path = index_prefix_path + "_disk.index";
     std::string medoids_path = disk_index_path + "_medoids.bin";
     std::string centroids_path = disk_index_path + "_centroids.bin";
 
-    unsigned R = (unsigned) atoi(param_list[0].c_str());
-    unsigned L = (unsigned) atoi(param_list[1].c_str());
-
-    double final_index_ram_limit = get_memory_budget(param_list[2]);
-    if (final_index_ram_limit <= 0) {
-      LOG(ERROR) << "Insufficient memory budget (or string was not in right "
-                    "format). Should be > 0.";
-      return false;
-    }
-    double indexing_ram_budget = (float) atof(param_list[3].c_str());
-    if (indexing_ram_budget <= 0) {
-      LOG(ERROR) << "Not building index. Please provide more RAM budget";
-      return false;
-    }
-    _u32 num_threads = (_u32) atoi(param_list[4].c_str());
-
     if (num_threads != 0) {
       omp_set_num_threads(num_threads);
     }
 
-    LOG(INFO) << "Starting index build: R=" << R << " L=" << L << " Query RAM budget: " << final_index_ram_limit
-              << " Indexing RAM budget: " << indexing_ram_budget << " T: " << num_threads << " Final index will be in "
-              << (single_file_index ? "single file" : "multiple files");
+    LOG(INFO) << "Starting index build: R=" << R << " L=" << L << " Build RAM budget: " << M << "GB T: " << num_threads
+              << " bytes per neighbor: " << bytes_per_nbr << " Final index will be in multiple files";
 
     std::string normalized_file_path = dataFilePath;
     if (_compareMetric == pipeann::Metric::COSINE) {
@@ -727,180 +596,21 @@ namespace pipeann {
     }
 
     auto s = std::chrono::high_resolution_clock::now();
-
-    size_t points_num, dim;
-
-    pipeann::get_bin_metadata(normalized_file_path, points_num, dim);
-    auto training_set_size = PQ_TRAINING_SET_FRACTION * points_num > MAX_PQ_TRAINING_SET_SIZE
-                                 ? MAX_PQ_TRAINING_SET_SIZE
-                                 : (_u32) std::round(PQ_TRAINING_SET_FRACTION * points_num);
-    training_set_size = (training_set_size == 0) ? 1 : training_set_size;
-    LOG(INFO) << "(Normalized, if required) file : " << normalized_file_path << " has: " << points_num
-              << " points. Changing training set size to " << training_set_size << " points";
-
-    size_t num_pq_chunks = calculate_num_pq_chunks(final_index_ram_limit, points_num, dim);
-
-    size_t train_size, train_dim;
-    float *train_data;  // maximum: 256000 * dim * data_size, 1GB for 1024-dim float vector.
+    nbr_handler->build(index_prefix_path, normalized_file_path, bytes_per_nbr);
 
     auto start = std::chrono::high_resolution_clock::now();
-    double p_val = ((double) training_set_size / (double) points_num);
-    // generates random sample and sets it to train_data and updates train_size
-    gen_random_slice<T>(normalized_file_path, p_val, train_data, train_size, train_dim);
-
-    LOG(INFO) << "Generating PQ pivots with training data of size: " << train_size
-              << " num PQ chunks: " << num_pq_chunks;
-    generate_pq_pivots(train_data, train_size, (uint32_t) dim, 256, (uint32_t) num_pq_chunks, NUM_KMEANS,
-                       pq_pivots_path);
+    auto p_val = nbr_handler->get_sample_p();
+    pipeann::build_merged_vamana_index<T>(normalized_file_path, _compareMetric, L, R, p_val, M, mem_index_path,
+                                          medoids_path, centroids_path, tag_file);
     auto end = std::chrono::high_resolution_clock::now();
-
-    LOG(INFO) << "Pivots generated in " << std::chrono::duration<double>(end - start).count() << "s.";
-    start = std::chrono::high_resolution_clock::now();
-    generate_pq_data_from_pivots<T>(normalized_file_path, 256, (uint32_t) num_pq_chunks, pq_pivots_path,
-                                    pq_compressed_vectors_path);  // 64MB.
-    delete[] train_data;
-    train_data = nullptr;
-    end = std::chrono::high_resolution_clock::now();
-    LOG(INFO) << "Compressed data generated and written in: " << std::chrono::duration<double>(end - start).count()
-              << "s.";
-    start = std::chrono::high_resolution_clock::now();
-    pipeann::build_merged_vamana_index<T>(normalized_file_path, _compareMetric, single_file_index, L, R, p_val,
-                                          indexing_ram_budget, mem_index_path, medoids_path, centroids_path, tag_file);
-    end = std::chrono::high_resolution_clock::now();
     LOG(INFO) << "Vamana index built in: " << std::chrono::duration<double>(end - start).count() << "s.";
 
     if (tag_file == nullptr) {
-      pipeann::create_disk_layout<T, TagT>(mem_index_path, normalized_file_path, "", pq_pivots_path,
-                                           pq_compressed_vectors_path, single_file_index, disk_index_path);
+      pipeann::create_disk_layout<T, TagT>(mem_index_path, normalized_file_path, "", disk_index_path);
     } else {
       std::string tag_filename = std::string(tag_file);
-      pipeann::create_disk_layout<T, TagT>(mem_index_path, normalized_file_path, tag_filename, pq_pivots_path,
-                                           pq_compressed_vectors_path, single_file_index, disk_index_path);
+      pipeann::create_disk_layout<T, TagT>(mem_index_path, normalized_file_path, tag_filename, disk_index_path);
     }
-
-    LOG(INFO) << "Deleting memory index file: " << mem_index_path;
-    std::remove(mem_index_path.c_str());
-    // TODO: This is poor design. The decision to add the ".data" prefix
-    // is taken by build_vamana_index. So, we shouldn't repeate it here.
-    // Checking to see if we can merge the data and index into one file.
-    std::remove((mem_index_path + ".data").c_str());
-    if (normalized_file_path != dataFilePath) {
-      // then we created a normalized vector file. Delete it.
-      LOG(INFO) << "Deleting normalized vector file: " << normalized_file_path;
-      std::remove(normalized_file_path.c_str());
-    }
-
-    auto e = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> diff = e - s;
-    LOG(INFO) << "Indexing time: " << diff.count();
-    return true;
-  }
-
-  template<typename T, typename TagT>
-  bool build_disk_index_py(const char *dataPath, const char *indexFilePath, uint32_t R, uint32_t L, uint32_t M,
-                           uint32_t num_threads, uint32_t PQ_bytes, pipeann::Metric _compareMetric,
-                           bool single_file_index, const char *tag_file) {
-    std::string dataFilePath(dataPath);
-    std::string index_prefix_path(indexFilePath);
-    std::string pq_pivots_path = index_prefix_path + "_pq_pivots.bin";
-    std::string pq_compressed_vectors_path = index_prefix_path + "_pq_compressed.bin";
-    std::string mem_index_path = index_prefix_path + "_mem.index";
-    std::string disk_index_path = index_prefix_path + "_disk.index";
-    std::string medoids_path = disk_index_path + "_medoids.bin";
-    std::string centroids_path = disk_index_path + "_centroids.bin";
-    std::string sample_base_prefix = index_prefix_path + "_sample";
-
-    double final_index_ram_limit = get_memory_budget(M);
-    if (final_index_ram_limit <= 0) {
-      LOG(ERROR) << "Insufficient memory budget (or string was not in right "
-                    "format). Should be > 0.";
-      return false;
-    }
-
-    if (num_threads != 0) {
-      omp_set_num_threads(num_threads);
-    }
-
-    LOG(INFO) << "Starting index build: R=" << R << " L=" << L << " Query RAM budget: " << final_index_ram_limit
-              << " T: " << num_threads << " Final index will be in "
-              << (single_file_index ? "single file" : "multiple files");
-
-    std::string normalized_file_path = dataFilePath;
-    if (_compareMetric == pipeann::Metric::COSINE) {
-      if (std::is_floating_point<T>::value) {
-        LOG(INFO) << "Cosine metric chosen. Normalizing vectors and "
-                     "changing distance to L2 to boost accuracy.";
-
-        normalized_file_path = std::string(indexFilePath) + "_data.normalized.bin";
-        normalize_data_file(dataFilePath, normalized_file_path);
-        _compareMetric = pipeann::Metric::L2;
-      } else {
-        LOG(ERROR) << "WARNING: Cannot normalize integral data types."
-                   << " Using cosine distance with integer data types may "
-                      "result in poor recall."
-                   << " Consider using L2 distance with integral data types.";
-      }
-    }
-
-    auto s = std::chrono::high_resolution_clock::now();
-
-    size_t points_num, dim;
-
-    pipeann::get_bin_metadata(normalized_file_path, points_num, dim);
-    auto training_set_size = PQ_TRAINING_SET_FRACTION * points_num > MAX_PQ_TRAINING_SET_SIZE
-                                 ? MAX_PQ_TRAINING_SET_SIZE
-                                 : (_u32) std::round(PQ_TRAINING_SET_FRACTION * points_num);
-    training_set_size = (training_set_size == 0) ? 1 : training_set_size;
-    LOG(INFO) << "(Normalized, if required) file : " << normalized_file_path << " has: " << points_num
-              << " points. Changing training set size to " << training_set_size << " points";
-
-    size_t num_pq_chunks = PQ_bytes;
-
-    size_t train_size, train_dim;
-    float *train_data;
-
-    auto start = std::chrono::high_resolution_clock::now();
-    double p_val = ((double) training_set_size / (double) points_num);
-    // generates random sample and sets it to train_data and updates train_size
-    gen_random_slice<T>(normalized_file_path, p_val, train_data, train_size, train_dim);
-
-    LOG(INFO) << "Generating PQ pivots with training data of size: " << train_size
-              << " num PQ chunks: " << num_pq_chunks;
-    generate_pq_pivots(train_data, train_size, (uint32_t) dim, 256, (uint32_t) num_pq_chunks, NUM_KMEANS,
-                       pq_pivots_path);
-    auto end = std::chrono::high_resolution_clock::now();
-
-    LOG(INFO) << "Pivots generated in " << std::chrono::duration<double>(end - start).count() << "s.";
-    start = std::chrono::high_resolution_clock::now();
-    generate_pq_data_from_pivots<T>(normalized_file_path, 256, (uint32_t) num_pq_chunks, pq_pivots_path,
-                                    pq_compressed_vectors_path);
-    delete[] train_data;
-    train_data = nullptr;
-    end = std::chrono::high_resolution_clock::now();
-    LOG(INFO) << "Compressed data generated and written in: " << std::chrono::duration<double>(end - start).count()
-              << "s.";
-    start = std::chrono::high_resolution_clock::now();
-    pipeann::build_merged_vamana_index<T>(normalized_file_path, _compareMetric, single_file_index, L, R, p_val, M,
-                                          mem_index_path, medoids_path, centroids_path, tag_file);
-    end = std::chrono::high_resolution_clock::now();
-    LOG(INFO) << "Vamana index built in: " << std::chrono::duration<double>(end - start).count() << "s.";
-
-    if (tag_file == nullptr) {
-      pipeann::create_disk_layout<T, TagT>(mem_index_path, normalized_file_path, "", pq_pivots_path,
-                                           pq_compressed_vectors_path, single_file_index, disk_index_path);
-    } else {
-      std::string tag_filename = std::string(tag_file);
-      pipeann::create_disk_layout<T, TagT>(mem_index_path, normalized_file_path, tag_filename, pq_pivots_path,
-                                           pq_compressed_vectors_path, single_file_index, disk_index_path);
-    }
-
-    double ten_percent_points = std::ceil(points_num * 0.1);
-    double num_sample_points =
-        ten_percent_points > MAX_SAMPLE_POINTS_FOR_WARMUP ? MAX_SAMPLE_POINTS_FOR_WARMUP : ten_percent_points;
-    double sample_sampling_rate = num_sample_points / points_num;
-    LOG(INFO) << "Generating warmup file with " << num_sample_points
-              << " points using a sampling rate of: " << sample_sampling_rate;
-    gen_random_slice<T>(normalized_file_path, sample_base_prefix, sample_sampling_rate);
 
     LOG(INFO) << "Deleting memory index file: " << mem_index_path;
     std::remove(mem_index_path.c_str());
@@ -921,67 +631,36 @@ namespace pipeann {
   }
 
   template void create_disk_layout<int8_t, uint32_t>(const std::string &mem_index_file, const std::string &base_file,
-                                                     const std::string &tag_file, const std::string &pq_pivots_file,
-                                                     const std::string &pq_compressed_vectors_file,
-                                                     bool single_file_index, const std::string &output_file);
+                                                     const std::string &tag_file, const std::string &output_file);
   template void create_disk_layout<uint8_t, uint32_t>(const std::string &mem_index_file, const std::string &base_file,
-                                                      const std::string &tag_file, const std::string &pq_pivots_file,
-                                                      const std::string &pq_compressed_vectors_file,
-                                                      bool single_file_index, const std::string &output_file);
+                                                      const std::string &tag_file, const std::string &output_file);
   template void create_disk_layout<float, uint32_t>(const std::string &mem_index_file, const std::string &base_file,
-                                                    const std::string &tag_file, const std::string &pq_pivots_file,
-                                                    const std::string &pq_compressed_vectors_file,
-                                                    bool single_file_index, const std::string &output_file);
-  // template void create_disk_layout<int8_t, uint64_t>(
-  //     const std::string &mem_index_file, const std::string &base_file, const std::string &tag_file,
-  //     const std::string &pq_pivots_file, const std::string &pq_compressed_vectors_file, bool single_file_index,
-  //     const std::string &output_file);
-  // template void create_disk_layout<uint8_t, uint64_t>(
-  //     const std::string &mem_index_file, const std::string &base_file, const std::string &tag_file,
-  //     const std::string &pq_pivots_file, const std::string &pq_compressed_vectors_file, bool single_file_index,
-  //     const std::string &output_file);
-  // template void create_disk_layout<float, uint64_t>(
-  //     const std::string &mem_index_file, const std::string &base_file, const std::string &tag_file,
-  //     const std::string &pq_pivots_file, const std::string &pq_compressed_vectors_file, bool single_file_index,
-  //     const std::string &output_file);
+                                                    const std::string &tag_file, const std::string &output_file);
 
-  template bool build_disk_index<int8_t, uint32_t>(const char *dataFilePath, const char *indexFilePath,
-                                                   const char *indexBuildParameters, pipeann::Metric _compareMetric,
-                                                   bool singleFileIndex, const char *tag_file);
-  template bool build_disk_index<uint8_t, uint32_t>(const char *dataFilePath, const char *indexFilePath,
-                                                    const char *indexBuildParameters, pipeann::Metric _compareMetric,
-                                                    bool singleFileIndex, const char *tag_file);
-  template bool build_disk_index<float, uint32_t>(const char *dataFilePath, const char *indexFilePath,
-                                                  const char *indexBuildParameters, pipeann::Metric _compareMetric,
-                                                  bool singleFileIndex, const char *tag_file);
-  // template bool build_disk_index<int8_t, uint64_t>(const char *dataFilePath,
-  //                                                                    const char *indexFilePath,
-  //                                                                    const char *indexBuildParameters,
-  //                                                                    pipeann::Metric _compareMetric,
-  //                                                                    bool singleFileIndex, const char *tag_file);
-  // template bool build_disk_index<uint8_t, uint64_t>(const char *dataFilePath,
-  //                                                                     const char *indexFilePath,
-  //                                                                     const char *indexBuildParameters,
-  //                                                                     pipeann::Metric _compareMetric,
-  //                                                                     bool singleFileIndex, const char *tag_file);
-  // template bool build_disk_index<float, uint64_t>(const char *dataFilePath, const char
-  // *indexFilePath,
-  //                                                                   const char *indexBuildParameters,
-  //                                                                   pipeann::Metric _compareMetric,
-  //                                                                   bool singleFileIndex, const char *tag_file);
+  template bool build_disk_index<int8_t, uint32_t>(const char *dataPath, const char *indexFilePath, uint32_t R,
+                                                   uint32_t L, uint32_t M, uint32_t num_threads, uint32_t bytes_per_nbr,
+                                                   pipeann::Metric _compareMetric, const char *tag_file,
+                                                   AbstractNeighbor<int8_t> *nbr_handler = nullptr);
+  template bool build_disk_index<uint8_t, uint32_t>(const char *dataPath, const char *indexFilePath, uint32_t R,
+                                                    uint32_t L, uint32_t M, uint32_t num_threads,
+                                                    uint32_t bytes_per_nbr, pipeann::Metric _compareMetric,
+                                                    const char *tag_file,
+                                                    AbstractNeighbor<uint8_t> *nbr_handler = nullptr);
+  template bool build_disk_index<float, uint32_t>(const char *dataPath, const char *indexFilePath, uint32_t R,
+                                                  uint32_t L, uint32_t M, uint32_t num_threads, uint32_t bytes_per_nbr,
+                                                  pipeann::Metric _compareMetric, const char *tag_file,
+                                                  AbstractNeighbor<float> *nbr_handler = nullptr);
 
-  template int build_merged_vamana_index<int8_t>(std::string base_file, pipeann::Metric _compareMetric,
-                                                 bool single_file_index, unsigned L, unsigned R, double sampling_rate,
-                                                 double ram_budget, std::string mem_index_path,
-                                                 std::string medoids_path, std::string centroids_file,
-                                                 const char *tag_file);
-  template int build_merged_vamana_index<float>(std::string base_file, pipeann::Metric _compareMetric,
-                                                bool single_file_index, unsigned L, unsigned R, double sampling_rate,
-                                                double ram_budget, std::string mem_index_path, std::string medoids_path,
+  template int build_merged_vamana_index<int8_t>(std::string base_file, pipeann::Metric _compareMetric, unsigned L,
+                                                 unsigned R, double sampling_rate, double ram_budget,
+                                                 std::string mem_index_path, std::string medoids_path,
+                                                 std::string centroids_file, const char *tag_file);
+  template int build_merged_vamana_index<float>(std::string base_file, pipeann::Metric _compareMetric, unsigned L,
+                                                unsigned R, double sampling_rate, double ram_budget,
+                                                std::string mem_index_path, std::string medoids_path,
                                                 std::string centroids_file, const char *tag_file);
-  template int build_merged_vamana_index<uint8_t>(std::string base_file, pipeann::Metric _compareMetric,
-                                                  bool single_file_index, unsigned L, unsigned R, double sampling_rate,
-                                                  double ram_budget, std::string mem_index_path,
-                                                  std::string medoids_path, std::string centroids_file,
-                                                  const char *tag_file);
+  template int build_merged_vamana_index<uint8_t>(std::string base_file, pipeann::Metric _compareMetric, unsigned L,
+                                                  unsigned R, double sampling_rate, double ram_budget,
+                                                  std::string mem_index_path, std::string medoids_path,
+                                                  std::string centroids_file, const char *tag_file);
 };  // namespace pipeann

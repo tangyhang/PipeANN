@@ -2,8 +2,8 @@
 #include <cstdint>
 #include <cstring>
 #include <ctime>
-#include <timer.h>
-#include "log.h"
+#include "utils/timer.h"
+#include "utils/log.h"
 #include "utils.h"
 
 #include <sys/mman.h>
@@ -40,9 +40,9 @@ void check_and_gen(char *gt_path, uint64_t index_npts, uint64_t tot_npts, uint64
         }
       }
       if ((uint64_t) cnt < target_topk) {
-        LOG(FATAL) << "Query " << i << " has less than " << target_topk << " gt points in range [" << real_st << ", "
-                   << ed << ")"
-                   << " " << cnt;
+        // LOG(FATAL) << "Query " << i << " has less than " << target_topk << " gt points in range [" << real_st << ", "
+        //            << ed << ")"
+        //            << " " << cnt;
         success = false;
       }
     }

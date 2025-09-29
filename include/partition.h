@@ -34,15 +34,3 @@ int shard_data_into_clusters(const std::string data_file, float *pivots, const s
 template<typename T>
 int partition_with_ram_budget(const std::string data_file, const double sampling_rate, double ram_budget,
                               size_t graph_degree, const std::string prefix_path, size_t k_base);
-
-template<typename T>
-int generate_pq_pivots(const std::unique_ptr<T[]> &passed_train_data, size_t num_train, unsigned dim,
-                       unsigned num_centers, unsigned num_pq_chunks, unsigned max_k_means_reps,
-                       std::string pq_pivots_path);
-
-int generate_pq_pivots(const float *train_data, size_t num_train, unsigned dim, unsigned num_centers,
-                       unsigned num_pq_chunks, unsigned max_k_means_reps, std::string pq_pivots_path);
-
-template<typename T>
-int generate_pq_data_from_pivots(const std::string data_file, unsigned num_centers, unsigned num_pq_chunks,
-                                 std::string pq_pivots_path, std::string pq_compressed_vectors_path, size_t offset = 0);

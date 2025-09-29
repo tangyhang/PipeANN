@@ -1,5 +1,5 @@
 #include "aligned_file_reader.h"
-#include "libcuckoo/cuckoohash_map.hh"
+#include "utils/libcuckoo/cuckoohash_map.hh"
 #include "ssd_index.h"
 #include <malloc.h>
 #include <algorithm>
@@ -11,10 +11,10 @@
 #include <cstdint>
 #include <limits>
 #include <tuple>
-#include "timer.h"
-#include "tsl/robin_map.h"
+#include "utils/timer.h"
+#include "utils/tsl/robin_map.h"
 #include "utils.h"
-#include "v2/page_cache.h"
+#include "utils/page_cache.h"
 
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -40,41 +40,29 @@ namespace pipeann {
 
     // pointers to buffers for data
     T *data_buf = query_buf->coord_scratch;
-    _u64 &data_buf_idx = query_buf->coord_idx;
+    uint64_t &data_buf_idx = query_buf->coord_idx;
     _mm_prefetch((char *) data_buf, _MM_HINT_T1);
 
     // sector scratch
     char *sector_scratch = query_buf->sector_scratch;
-    _u64 &sector_scratch_idx = query_buf->sector_idx;
+    uint64_t &sector_scratch_idx = query_buf->sector_idx;
 
-    // query <-> PQ chunk centers distances
-    float *pq_dists = query_buf->aligned_pqtable_dist_scratch;
-    pq_table.populate_chunk_distances(query, pq_dists);
-
-    // query <-> neighbor list
+    nbr_handler->initialize_query(query, query_buf);
     float *dist_scratch = query_buf->aligned_dist_scratch;
-    _u8 *pq_coord_scratch = query_buf->aligned_pq_coord_scratch;
-
-    // lambda to batch compute query<-> node distances in PQ space
-    auto compute_dists = [this, pq_coord_scratch, pq_dists](const unsigned *ids, const _u64 n_ids, float *dists_out) {
-      ::aggregate_coords(ids, n_ids, this->data.data(), this->n_chunks, pq_coord_scratch);
-      ::pq_dist_lookup(pq_coord_scratch, n_ids, this->n_chunks, pq_dists, dists_out);
-    };
 
     Timer query_timer, io_timer, cpu_timer;
     std::vector<Neighbor> retset;
     retset.resize(mem_L + 10 * l_search);
-    tsl::robin_set<_u64> visited(4096);
+    tsl::robin_set<uint64_t> visited(4096);
 
     // re-naming `expanded_nodes_info` to not change rest of the code
     std::vector<Neighbor> &full_retset = expanded_nodes_info;
     full_retset.reserve(10 * l_search);
-    _u32 best_medoid = medoids[0];
 
     unsigned cur_list_size = 0;
-    auto compute_and_add_to_retset = [&](const unsigned *node_ids, const _u64 n_ids) {
-      compute_dists(node_ids, n_ids, dist_scratch);
-      for (_u64 i = 0; i < n_ids; ++i) {
+    auto compute_and_add_to_retset = [&](const unsigned *node_ids, const uint64_t n_ids) {
+      nbr_handler->compute_dists(query_buf, node_ids, n_ids);
+      for (uint64_t i = 0; i < n_ids; ++i) {
         retset[cur_list_size].id = node_ids[i];
         retset[cur_list_size].distance = dist_scratch[i];
         retset[cur_list_size++].flag = true;
@@ -89,7 +77,7 @@ namespace pipeann {
       compute_and_add_to_retset(mem_tags.data(), std::min((unsigned) mem_L, (unsigned) l_search));
     } else {
       // Do not use optimized start point.
-      compute_and_add_to_retset(&best_medoid, 1);
+      compute_and_add_to_retset(&medoid, 1);
     }
 
     std::sort(retset.begin(), retset.begin() + cur_list_size);
@@ -118,9 +106,9 @@ namespace pipeann {
       vec_rdlocks.clear();
       sector_scratch_idx = 0;
       // find new beam
-      // WAS: _u64 marker = k - 1;
-      _u32 marker = k;
-      _u32 num_seen = 0;
+      // WAS: uint64_t marker = k - 1;
+      uint32_t marker = k;
+      uint32_t num_seen = 0;
       while (marker < cur_list_size && frontier.size() < beam_width && num_seen < beam_width) {
         if (retset[marker].flag) {
           num_seen++;
@@ -136,7 +124,7 @@ namespace pipeann {
         if (stats != nullptr)
           stats->n_hops++;
         locked = this->lock_idx(idx_lock_table, kInvalidID, frontier, true);
-        for (_u64 i = 0; i < frontier.size(); i++) {
+        for (uint64_t i = 0; i < frontier.size(); i++) {
           uint32_t id = frontier[i];
           uint32_t loc = this->id2loc(id);
           uint64_t offset = loc_sector_no(loc) * SECTOR_LEN;
@@ -144,7 +132,8 @@ namespace pipeann {
           fnhood_t fnhood = std::make_tuple(id, loc, sector_buf);
           sector_scratch_idx++;
           frontier_nhoods.push_back(fnhood);
-          frontier_read_reqs.emplace_back(IORequest(offset, size_per_io, sector_buf, u_loc_offset(loc), max_node_len));
+          frontier_read_reqs.emplace_back(
+              IORequest(offset, size_per_io, sector_buf, u_loc_offset(loc), max_node_len, sector_scratch));
           if (stats != nullptr) {
             stats->n_4k++;
             stats->n_ios++;
@@ -152,11 +141,7 @@ namespace pipeann {
           num_ios++;
         }
         io_timer.reset();
-#ifdef DIRECT_READ_CC
-        reader->read(frontier_read_reqs, ctx);
-#else
         reader->read_alloc(frontier_read_reqs, ctx, &page_ref);
-#endif
 
         if (stats != nullptr) {
           stats->io_us += (double) io_timer.elapsed();
@@ -168,7 +153,7 @@ namespace pipeann {
         auto [id, loc, sector_buf] = frontier_nhood;
         char *node_disk_buf = offset_to_loc(sector_buf, loc);
         unsigned *node_buf = offset_to_node_nhood(node_disk_buf);
-        _u64 nnbrs = (_u64) (*node_buf);
+        uint64_t nnbrs = (uint64_t) (*node_buf);
         T *node_fp_coords = offset_to_node_coords(node_disk_buf);
         assert(data_buf_idx < MAX_N_CMPS);
 
@@ -186,7 +171,7 @@ namespace pipeann {
 
         // compute node_nbrs <-> query dist in PQ space
         cpu_timer.reset();
-        compute_dists(node_nbrs, nnbrs, dist_scratch);
+        nbr_handler->compute_dists(query_buf, node_nbrs, nnbrs);
         if (stats != nullptr) {
           stats->n_cmps += (double) nnbrs;
           stats->cpu_us += (double) cpu_timer.elapsed();
@@ -194,7 +179,7 @@ namespace pipeann {
 
         cpu_timer.reset();
         // process prefetch-ed nhood
-        for (_u64 m = 0; m < nnbrs; ++m) {
+        for (uint64_t m = 0; m < nnbrs; ++m) {
           unsigned id = node_nbrs[m];
           if (unlikely(id > this->cur_id)) {
             LOG(ERROR) << "ID is larger than current ID, " << id << " vs " << this->cur_id;
@@ -234,7 +219,7 @@ namespace pipeann {
           // TODO(gh): contention still exists in id2tag(x)
           // O(n), but it is not slow as L is typically smaller than 300.
           // l_search monotonically increases to handle deleted nodes.
-          _u32 tot = 0, cur = 0;
+          uint32_t tot = 0, cur = 0;
           for (cur = 0; cur < cur_list_size; ++cur) {
             uint32_t tag = id2tag(retset[cur].id);
             if (exclude_nodes->find(tag) == exclude_nodes->end()) {
@@ -286,15 +271,16 @@ namespace pipeann {
   }
 
   template<typename T, typename TagT>
-  size_t SSDIndex<T, TagT>::beam_search(const T *query, const _u64 k_search, const _u32 mem_L, const _u64 l_search,
-                                        TagT *res_tags, float *distances, const _u64 beam_width, QueryStats *stats,
+  size_t SSDIndex<T, TagT>::beam_search(const T *query, const uint64_t k_search, const uint32_t mem_L,
+                                        const uint64_t l_search, TagT *res_tags, float *distances,
+                                        const uint64_t beam_width, QueryStats *stats,
                                         tsl::robin_set<uint32_t> *deleted_nodes, bool dyn_search_l) {
     // iterate to fixed point
     std::shared_lock lk(merge_lock);
     std::vector<Neighbor> expanded_nodes_info;
-    this->do_beam_search(query, mem_L, (_u32) l_search, (_u32) beam_width, expanded_nodes_info, nullptr, stats,
+    this->do_beam_search(query, mem_L, (uint32_t) l_search, (uint32_t) beam_width, expanded_nodes_info, nullptr, stats,
                          deleted_nodes, dyn_search_l);
-    _u64 res_count = 0;
+    uint64_t res_count = 0;
     for (uint32_t i = 0; i < l_search && res_count < k_search && i < expanded_nodes_info.size(); i++) {
       res_tags[res_count] = id2tag(expanded_nodes_info[i].id);
       distances[res_count] = expanded_nodes_info[i].distance;
@@ -304,6 +290,6 @@ namespace pipeann {
   }
 
   template class SSDIndex<float>;
-  template class SSDIndex<_s8>;
-  template class SSDIndex<_u8>;
+  template class SSDIndex<int8_t>;
+  template class SSDIndex<uint8_t>;
 }  // namespace pipeann

@@ -1,5 +1,6 @@
 #include "aligned_file_reader.h"
-#include "libcuckoo/cuckoohash_map.hh"
+#include "utils/libcuckoo/cuckoohash_map.hh"
+#include "ssd_index_defs.h"
 #include "ssd_index.h"
 #include <malloc.h>
 #include <algorithm>
@@ -11,11 +12,11 @@
 #include <cstdint>
 #include <limits>
 #include <tuple>
-#include "timer.h"
-#include "tsl/robin_map.h"
-#include "tsl/robin_set.h"
+#include "utils/timer.h"
+#include "utils/tsl/robin_map.h"
+#include "utils/tsl/robin_set.h"
 #include "utils.h"
-#include "v2/page_cache.h"
+#include "utils/page_cache.h"
 
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -23,26 +24,25 @@
 
 namespace pipeann {
   template<typename T, typename TagT>
-  size_t SSDIndex<T, TagT>::coro_search(T **queries, const _u64 k_search, const _u32 mem_L, const _u64 l_search,
-                                        TagT **res_tags, float **res_dists, const _u64 beam_width, int N) {
+  size_t SSDIndex<T, TagT>::coro_search(T **queries, const uint64_t k_search, const uint32_t mem_L,
+                                        const uint64_t l_search, TagT **res_tags, float **res_dists,
+                                        const uint64_t beam_width, int N) {
     // beam search with intra-thread parallelism.
     static constexpr int kMaxCoroPerThread = 8;
     static constexpr int kMaxVectorDim = 512;
     struct alignas(SECTOR_LEN) CoroDataOne {
       // buffer.
+      QueryBuffer<T> query_buf;
       char sectors[SECTOR_LEN * 128];
       T query[kMaxVectorDim];
-      _u8 pq_coord_scratch[32768 * 32];
-      float pq_dists[32768];
       T data_buf[ROUND_UP(1024 * kMaxVectorDim, 256)];
-      float dist_scratch[512];
-      _u64 data_buf_idx;
-      _u64 sector_idx;
+      uint64_t data_buf_idx;
+      uint64_t sector_idx;
 
       // search state.
       std::vector<Neighbor> full_retset;
       std::vector<Neighbor> retset;
-      tsl::robin_set<_u64> visited;
+      tsl::robin_set<uint64_t> visited;
 
       std::vector<unsigned> frontier;
       using fnhood_t = std::tuple<unsigned, unsigned, char *>;
@@ -51,11 +51,6 @@ namespace pipeann {
 
       SSDIndex<T> *parent;
       unsigned cur_list_size, cmps, k;
-
-      void compute_dists(const unsigned *ids, const _u64 n_ids, float *dists_out) {
-        ::aggregate_coords(ids, n_ids, parent->data.data(), parent->n_chunks, pq_coord_scratch);
-        ::pq_dist_lookup(pq_coord_scratch, n_ids, parent->n_chunks, pq_dists, dists_out);
-      };
 
       void print() {
         LOG(INFO) << "Full retset size " << full_retset.size() << " retset size: " << retset.size()
@@ -74,19 +69,19 @@ namespace pipeann {
         cur_list_size = cmps = k = 0;
       }
 
-      void compute_and_add_to_retset(const unsigned *node_ids, const _u64 n_ids) {
-        compute_dists(node_ids, n_ids, dist_scratch);
-        for (_u64 i = 0; i < n_ids; ++i) {
+      void compute_and_add_to_retset(const unsigned *node_ids, const uint64_t n_ids) {
+        parent->nbr_handler->compute_dists(&query_buf, node_ids, n_ids);
+        for (uint64_t i = 0; i < n_ids; ++i) {
           auto &item = retset[cur_list_size];
           item.id = node_ids[i];
-          item.distance = dist_scratch[i];
+          item.distance = query_buf.aligned_dist_scratch[i];
           item.flag = true;
           cur_list_size++;
           visited.insert(node_ids[i]);
         }
       };
 
-      void issue_next_io_batch(const _u64 beam_width, void *ctx) {
+      void issue_next_io_batch(const uint64_t beam_width, void *ctx) {
         if (search_ends()) {
           return;
         }
@@ -96,8 +91,8 @@ namespace pipeann {
         frontier_read_reqs.clear();
         sector_idx = 0;
 
-        _u32 marker = k;
-        _u32 num_seen = 0;
+        uint32_t marker = k;
+        uint32_t num_seen = 0;
         while (marker < cur_list_size && frontier.size() < beam_width && num_seen < beam_width) {
           if (retset[marker].flag) {
             num_seen++;
@@ -110,13 +105,14 @@ namespace pipeann {
         // read nhoods of frontier ids
         std::vector<uint32_t> locked;
         if (!frontier.empty()) {
-          for (_u64 i = 0; i < frontier.size(); i++) {
+          for (uint64_t i = 0; i < frontier.size(); i++) {
             uint32_t loc = frontier[i];
             uint64_t offset = parent->loc_sector_no(loc) * SECTOR_LEN;
             auto sector_buf = sectors + sector_idx * parent->size_per_io;
             fnhood_t fnhood = std::make_tuple(loc, loc, sector_buf);
             sector_idx++;
             frontier_nhoods.push_back(fnhood);
+
             frontier_read_reqs.emplace_back(IORequest(offset, parent->size_per_io, sector_buf, 0, 0));
           }
           parent->reader->send_io(frontier_read_reqs, ctx, false);
@@ -140,7 +136,7 @@ namespace pipeann {
           auto [id, loc, sector_buf] = frontier_nhood;
           char *node_disk_buf = parent->offset_to_loc(sector_buf, loc);
           unsigned *node_buf = parent->offset_to_node_nhood(node_disk_buf);
-          _u64 nnbrs = (_u64) (*node_buf);
+          uint64_t nnbrs = (uint64_t) (*node_buf);
           T *node_fp_coords = parent->offset_to_node_coords(node_disk_buf);
 
           T *node_fp_coords_copy = data_buf + (data_buf_idx * parent->aligned_dim);
@@ -154,17 +150,17 @@ namespace pipeann {
 
           unsigned *node_nbrs = (node_buf + 1);
           // compute node_nbrs <-> query dist in PQ space
-          compute_dists(node_nbrs, nnbrs, dist_scratch);
+          parent->nbr_handler->compute_dists(&query_buf, node_nbrs, nnbrs);
 
           // process prefetch-ed nhood
-          for (_u64 m = 0; m < nnbrs; ++m) {
+          for (uint64_t m = 0; m < nnbrs; ++m) {
             unsigned id = node_nbrs[m];
             if (visited.find(id) != visited.end()) {
               continue;
             } else {
               visited.insert(id);
               cmps++;
-              float dist = dist_scratch[m];
+              float dist = query_buf.aligned_dist_scratch[m];
               if (dist >= retset[cur_list_size - 1].distance && (cur_list_size == l_search))
                 continue;
               Neighbor nn(id, dist, true);
@@ -200,6 +196,7 @@ namespace pipeann {
       CoroData(SSDIndex<T> *parent) {
         for (int i = 0; i < kMaxCoroPerThread; ++i) {
           data[i].parent = parent;
+          parent->init_query_buf(data[i].query_buf);
         }
       }
     };
@@ -235,12 +232,9 @@ namespace pipeann {
       _mm_prefetch((char *) data_buf, _MM_HINT_T1);
 
       // query <-> PQ chunk centers distances
-      float *pq_dists = coro_data.pq_dists;
-      pq_table.populate_chunk_distances(query, pq_dists);
+      nbr_handler->initialize_query(query, &coro_data.query_buf);
 
       coro_data.reset();
-
-      _u32 best_medoid = medoids[0];
 
       if (mem_L) {
         std::vector<unsigned> mem_tags(mem_L);
@@ -249,7 +243,7 @@ namespace pipeann {
         coro_data.compute_and_add_to_retset(mem_tags.data(), std::min((unsigned) mem_L, (unsigned) l_search));
       } else {
         // Do not use optimized start point.
-        coro_data.compute_and_add_to_retset(&best_medoid, 1);
+        coro_data.compute_and_add_to_retset(&medoid, 1);
       }
       std::sort(coro_data.retset.begin(), coro_data.retset.begin() + coro_data.cur_list_size);
     }
@@ -283,8 +277,8 @@ namespace pipeann {
       std::sort(full_retset.begin(), full_retset.end(),
                 [](const Neighbor &left, const Neighbor &right) { return left < right; });
 
-      _u64 t = 0;
-      for (_u64 i = 0; i < full_retset.size() && t < k_search; i++) {
+      uint64_t t = 0;
+      for (uint64_t i = 0; i < full_retset.size() && t < k_search; i++) {
         if (i > 0 && full_retset[i].id == full_retset[i - 1].id) {
           continue;  // deduplicate.
         }
@@ -301,6 +295,6 @@ namespace pipeann {
   }
 
   template class SSDIndex<float>;
-  template class SSDIndex<_s8>;
-  template class SSDIndex<_u8>;
+  template class SSDIndex<int8_t>;
+  template class SSDIndex<uint8_t>;
 }  // namespace pipeann

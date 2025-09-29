@@ -1,5 +1,6 @@
 #include "aligned_file_reader.h"
-#include "libcuckoo/cuckoohash_map.hh"
+#include "utils/libcuckoo/cuckoohash_map.hh"
+#include "nbr/pq_nbr.h"
 #include "ssd_index.h"
 #include <malloc.h>
 #include <algorithm>
@@ -11,10 +12,10 @@
 #include <cstdint>
 #include <limits>
 #include <tuple>
-#include "timer.h"
-#include "tsl/robin_map.h"
+#include "utils/timer.h"
+#include "utils/tsl/robin_map.h"
 #include "utils.h"
-#include "v2/page_cache.h"
+#include "utils/page_cache.h"
 
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -39,7 +40,7 @@ namespace pipeann {
     std::string disk_index_out = out_path_prefix + "_disk.index";
     // Note that the index is immutable currently.
     // Step 1: populate neighborhoods, allocate IDs.
-    libcuckoo::cuckoohash_map<uint32_t, uint32_t> id_map;                       // old_id -> new_id
+    libcuckoo::cuckoohash_map<uint32_t, uint32_t> id_map, rev_id_map;           // old_id -> new_id & new_id -> old_id
     libcuckoo::cuckoohash_map<uint32_t, std::vector<uint32_t>> deleted_nhoods;  // id -> nhood
     std::atomic<uint64_t> new_npoints = 0;
     Timer delete_timer;
@@ -75,6 +76,7 @@ namespace pipeann {
           // allocate ID.
           uint64_t new_id = new_npoints.fetch_add(1);
           id_map.insert(id, new_id);
+          rev_id_map.insert(new_id, id);
           continue;
         }
 
@@ -118,7 +120,6 @@ namespace pipeann {
       LOG(INFO) << "Write back " << wb_id << "/" << n_used_id << " IDs.";
     };
 
-    std::vector<uint8_t> pq_coords(new_npoints * n_chunks, 0);
     std::vector<TagT> new_tags(new_npoints);
 
     for (uint64_t in_sector = 0; in_sector < n_sectors; in_sector += SECTORS_PER_MERGE) {
@@ -164,7 +165,7 @@ namespace pipeann {
           std::vector<float> dists(nhood.size(), 0.0f);
           std::vector<Neighbor> pool(nhood.size());
           auto &thread_pq_buf = thread_pq_bufs[omp_get_thread_num()];
-          compute_pq_dists(id, nhood.data(), dists.data(), (_u32) nhood.size(), thread_pq_buf);
+          nbr_handler->compute_dists(id, nhood.data(), nhood.size(), dists.data(), thread_pq_buf);
 
           for (uint32_t k = 0; k < nhood.size(); k++) {
             pool[k].id = nhood[k];
@@ -181,6 +182,9 @@ namespace pipeann {
         // map to new IDs.
         for (auto &nbr : nhood) {
           nbr = id_map.find(nbr);
+          if (unlikely(nbr > new_npoints)) {
+            LOG(ERROR) << "Invalid neighbor ID: " << nbr << ", new_npoints: " << new_npoints;
+          }
         }
 
         // write neighbors.
@@ -194,8 +198,7 @@ namespace pipeann {
         *(w_node.nbrs - 1) = w_node.nnbrs;
         memcpy(w_node.nbrs, nhood.data(), w_node.nnbrs * sizeof(uint32_t));
         ++n_used_id;
-        // copy PQ and tags.
-        memcpy(pq_coords.data() + new_id * n_chunks, this->data.data() + id * n_chunks, n_chunks);
+        // copy tags.
         new_tags[new_id] = id2tag(id);
       }
 
@@ -210,7 +213,9 @@ namespace pipeann {
     }
     LOG(INFO) << "Write nhoods finished, totally elapsed " << delete_timer.elapsed() / 1e3 << "ms.";
 
-    uint32_t medoid = this->medoids[0];
+    // duplicate neighbor handler.
+    auto new_nbr_handler = this->nbr_handler->shuffle(rev_id_map, new_npoints, nthreads);
+
     while (deleted_nodes_set.find(id2tag(medoid)) != deleted_nodes_set.end()) {
       LOG(INFO) << "Medoid deleted. Choosing another start node.";
       const auto &nhoods = deleted_nhoods.find(medoid);
@@ -225,9 +230,11 @@ namespace pipeann {
     merge_lock.lock();  // unlock in reload().
     // metadata.
     this->num_points = new_npoints;
-    this->medoids[0] = id_map.find(medoid);
+    this->medoid = id_map.find(medoid);
     // PQ.
-    this->data = std::move(pq_coords);
+    auto tmp = this->nbr_handler;
+    this->nbr_handler = new_nbr_handler;
+    delete tmp;
     // tags.
     tags.clear();
     id2loc_.clear();
@@ -249,25 +256,10 @@ namespace pipeann {
   void SSDIndex<T, TagT>::write_metadata_and_pq(const std::string &in_path_prefix, const std::string &out_path_prefix,
                                                 const uint64_t &new_npoints, const uint64_t &new_medoid,
                                                 std::vector<TagT> *new_tags) {
-    uint64_t file_size = SECTOR_LEN + ROUND_UP(new_npoints, nnodes_per_sector) / nnodes_per_sector * SECTOR_LEN;
-    std::vector<uint64_t> output_metadata;
-    output_metadata.push_back(new_npoints);
-    output_metadata.push_back((uint64_t) this->data_dim);
-
-    output_metadata.push_back(new_medoid);  // mapped medoid
-    output_metadata.push_back(this->max_node_len);
-    output_metadata.push_back(nnodes_per_sector);
-    output_metadata.push_back(this->num_frozen_points);
-    output_metadata.push_back(this->frozen_location);
-    output_metadata.push_back(file_size);
-    LOG(INFO) << "New metadata: " << "num points: " << new_npoints << " data dim: " << this->data_dim
-              << " medoid: " << new_medoid << " max node len: " << this->max_node_len;
-    LOG(INFO) << "Nnodes per sector: " << nnodes_per_sector << " num frozen points: " << this->num_frozen_points
-              << " frozen location: " << this->frozen_location << " file size: " << file_size / 1024 / 1024 << "MB";
-
+    SSDIndexMetadata<T> meta(new_npoints, this->data_dim, new_medoid, this->max_node_len, this->nnodes_per_sector);
+    meta.print();
     std::string disk_index_out = out_path_prefix + "_disk.index";
-    pipeann::save_bin<uint64_t>(disk_index_out, output_metadata.data(), output_metadata.size(), 1, 0);
-    std::ignore = truncate(disk_index_out.c_str(), file_size);
+    meta.save_to_disk_index(disk_index_out);
 
     // Step 3. Write tags and PQ.
     std::vector<TagT> tags_vec;
@@ -279,21 +271,12 @@ namespace pipeann {
       new_tags = &tags_vec;
     }
     pipeann::save_bin<TagT>(out_path_prefix + "_disk.index.tags", new_tags->data(), new_npoints, 1, 0);
-
-    // write PQ pivots.
-    std::string pq_out = out_path_prefix + "_pq_compressed.bin";
-    pipeann::save_bin<uint8_t>(pq_out, this->data.data(), new_npoints, n_chunks);
-
-    if (in_path_prefix != out_path_prefix) {
-      std::filesystem::copy(in_path_prefix + "_pq_pivots.bin", out_path_prefix + "_pq_pivots.bin",
-                            std::filesystem::copy_options::overwrite_existing);
-    }
+    nbr_handler->save(out_path_prefix.c_str());
   }
 
   template<typename T, typename TagT>
   void SSDIndex<T, TagT>::reload(const char *index_prefix, uint32_t num_threads) {
     std::string iprefix = std::string(index_prefix);
-    std::string pq_compressed_vectors = iprefix + "_pq_compressed.bin";
     std::string disk_index_file = iprefix + "_disk.index";
     this->_disk_index_file = disk_index_file;
     this->max_nthreads = num_threads;
@@ -301,20 +284,21 @@ namespace pipeann {
     reader->close();
     reader->open(disk_index_file, true, false);
 
-    LOG(INFO) << "Reloading, num_points " << this->num_points << " n_chunks: " << this->n_chunks;
-    this->cur_id = this->cur_loc = this->num_points;
-    if (this->num_points % nnodes_per_sector != 0) {
-      this->cur_loc += nnodes_per_sector - (num_points % nnodes_per_sector);
-    }
+    // reload metadata.
+    SSDIndexMetadata<T> meta;
+    meta.load_from_disk_index(disk_index_file);
+    this->init_metadata(meta);
 
+    // No need to reload PQ, as it is already reloaded in merge_deletes.
     while (!this->empty_pages.empty()) {
       this->empty_pages.pop();
     }
     merge_lock.unlock();
+    LOG(INFO) << "Reload finished, cur_id: " << this->cur_id << ", cur_loc: " << this->cur_loc;
     return;
   }
 
   template class SSDIndex<float>;
-  template class SSDIndex<_s8>;
-  template class SSDIndex<_u8>;
+  template class SSDIndex<int8_t>;
+  template class SSDIndex<uint8_t>;
 }  // namespace pipeann

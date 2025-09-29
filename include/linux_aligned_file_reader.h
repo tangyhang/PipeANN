@@ -1,12 +1,12 @@
 #pragma once
 
 #include "aligned_file_reader.h"
-#include "v2/lock_table.h"
+#include "utils/lock_table.h"
 
 class LinuxAlignedFileReader : public AlignedFileReader {
  private:
   uint64_t file_sz;
-  FileHandle file_desc;
+  int file_desc;
   void *bad_ctx = nullptr;
 
  public:
@@ -14,6 +14,8 @@ class LinuxAlignedFileReader : public AlignedFileReader {
   ~LinuxAlignedFileReader();
 
   void *get_ctx(int flag = 0);
+
+  void register_buf(void *buf, uint64_t buf_size, int mrid);
 
   // Open & close ops
   // Blocking calls

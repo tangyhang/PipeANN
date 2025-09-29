@@ -15,9 +15,6 @@ target_link_libraries(gen_tags ${PROJECT_NAME})
 add_executable(gt_update gt_update.cpp)
 target_link_libraries(gt_update ${PROJECT_NAME} )
 
-add_executable(convert_bin convert_bin.cpp)
-target_link_libraries(convert_bin ${PROJECT_NAME} )
-
 add_executable(change_pts change_pts.cpp)
 target_link_libraries(change_pts ${PROJECT_NAME})
 
@@ -38,3 +35,6 @@ target_link_libraries(search_disk_index_mem ${PROJECT_NAME})
 
 add_executable(pad_partition pad_partition.cpp)
 target_link_libraries(pad_partition ${PROJECT_NAME} )
+
+add_executable(normalize_data normalize_data.cpp)
+target_link_libraries(normalize_data ${PROJECT_NAME})

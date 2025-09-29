@@ -1,25 +1,24 @@
 #include "aligned_file_reader.h"
-#include "libcuckoo/cuckoohash_map.hh"
+#include "utils/libcuckoo/cuckoohash_map.hh"
 #include "neighbor.h"
 #include "ssd_index.h"
 #include <malloc.h>
 #include <algorithm>
+#ifndef USE_AIO
+#include "liburing.h"
+#endif
 
 #include <omp.h>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include "timer.h"
-#include "tsl/robin_set.h"
+#include "utils/timer.h"
+#include "utils/tsl/robin_set.h"
 #include "utils.h"
-#include "v2/page_cache.h"
+#include "utils/page_cache.h"
 
 #include <unistd.h>
 #include <sys/syscall.h>
-
-#ifndef USE_AIO
-#include "liburing.h"
-#endif
 
 namespace pipeann {
   struct io_t {
@@ -41,8 +40,9 @@ namespace pipeann {
   };
 
   template<typename T, typename TagT>
-  size_t SSDIndex<T, TagT>::pipe_search(const T *query1, const _u64 k_search, const _u32 mem_L, const _u64 l_search,
-                                        TagT *res_tags, float *distances, const _u64 beam_width, QueryStats *stats) {
+  size_t SSDIndex<T, TagT>::pipe_search(const T *query1, const uint64_t k_search, const uint32_t mem_L,
+                                        const uint64_t l_search, TagT *res_tags, float *distances,
+                                        const uint64_t beam_width, QueryStats *stats) {
     QueryBuffer<T> *query_buf = pop_query_buf(query1);
 #ifdef USE_AIO
     void *ctx = reader->get_ctx();
@@ -68,32 +68,19 @@ namespace pipeann {
 
     // sector scratch
     char *sector_scratch = query_buf->sector_scratch;
-
-    // query <-> neighbor list
     float *dist_scratch = query_buf->aligned_dist_scratch;
-    _u8 *pq_coord_scratch = query_buf->aligned_pq_coord_scratch;
 
     Timer query_timer;
-    std::vector<Neighbor> retset(mem_L + l_search * 10);
+    std::vector<Neighbor> retset(mem_L + this->range + l_search * 10);
     auto &visited = *(query_buf->visited);
     unsigned cur_list_size = 0;
 
     std::vector<Neighbor> full_retset;
     full_retset.reserve(l_search * 10);
 
-    // query <-> PQ chunk centers distances
-    float *pq_dists = query_buf->aligned_pqtable_dist_scratch;
-
 #ifndef OVERLAP_INIT
-    pq_table.populate_chunk_distances(query, pq_dists);  // overlap with the first I/O.
+    nbr_handler->initialize_query(query, query_buf);
 #endif
-
-    // lambda to batch compute query<-> node distances in PQ space
-    auto compute_pq_dists = [this, pq_coord_scratch, pq_dists](const unsigned *ids, const _u64 n_ids,
-                                                               float *dists_out) {
-      ::aggregate_coords(ids, n_ids, this->data.data(), this->n_chunks, pq_coord_scratch);
-      ::pq_dist_lookup(pq_coord_scratch, n_ids, this->n_chunks, pq_dists, dists_out);
-    };
 
     auto compute_exact_dists_and_push = [&](const char *node_buf, const unsigned id) -> float {
       T *node_fp_coords_copy = data_buf;
@@ -118,7 +105,7 @@ namespace pipeann {
       n_computes += nbors_cand_size;
       if (nbors_cand_size) {
         // auto cpu1_st = std::chrono::high_resolution_clock::now();
-        compute_pq_dists(node_nbrs, nbors_cand_size, dist_scratch);
+        nbr_handler->compute_dists(query_buf, node_nbrs, nbors_cand_size);
         for (unsigned m = 0; m < nbors_cand_size; ++m) {
           const int nbor_id = node_nbrs[m];
           const float nbor_dist = dist_scratch[m];
@@ -146,23 +133,25 @@ namespace pipeann {
       }
     };
 
-    auto add_to_retset = [&](const unsigned *node_ids, const _u64 n_ids, float *dists) {
-      for (_u64 i = 0; i < n_ids; ++i) {
+    auto add_to_retset = [&](const unsigned *node_ids, const uint64_t n_ids, float *dists) {
+      for (uint64_t i = 0; i < n_ids; ++i) {
         retset[cur_list_size++] = Neighbor(node_ids[i], dists[i], true);
         visited.insert(node_ids[i]);
       }
     };
 
     // stats.
-    stats->io_us = 0;
-    stats->io_us1 = 0;
-    stats->cpu_us = 0;
-    stats->cpu_us1 = 0;
-    stats->cpu_us2 = 0;
+    if (stats != nullptr) {
+      stats->io_us = 0;
+      stats->io_us1 = 0;
+      stats->cpu_us = 0;
+      stats->cpu_us1 = 0;
+      stats->cpu_us2 = 0;
+    }
     // search in in-memory index.
 
 #ifdef DYN_PIPE_WIDTH
-    int64_t cur_beam_width = 4;  // before converge.
+    int64_t cur_beam_width = std::min(4ul, beam_width);  // before converge.
 #else
     int64_t cur_beam_width = beam_width;  // before converge.
 #endif
@@ -172,21 +161,21 @@ namespace pipeann {
 #ifdef OVERLAP_INIT
     if (mem_L) {
       mem_index_->search_with_tags_fast(query, mem_L, mem_tags.data(), mem_dists.data());
-      add_to_retset(mem_tags.data(), std::min((_u64) mem_L, l_search), mem_dists.data());
+      add_to_retset(mem_tags.data(), std::min((uint64_t) mem_L, l_search), mem_dists.data());
     } else {
       // cannot overlap.
-      pq_table.populate_chunk_distances_nt(query, pq_dists);
-      compute_pq_dists(&medoids[0], 1, dist_scratch);
-      add_to_retset(&medoids[0], 1, dist_scratch);
+      nbr_handler->initialize_query(query, query_buf);
+      nbr_handler->compute_dists(query_buf, &medoid, 1);
+      add_to_retset(&medoid, 1, dist_scratch);
     }
 #else
     if (mem_L) {
       mem_index_->search_with_tags_fast(query, mem_L, mem_tags.data(), mem_dists.data());
-      compute_pq_dists(mem_tags.data(), mem_L, dist_scratch);
-      add_to_retset(mem_tags.data(), std::min((_u64) mem_L, l_search), dist_scratch);
+      nbr_handler->compute_dists(query_buf, mem_tags.data(), mem_L);
+      add_to_retset(mem_tags.data(), std::min((uint64_t) mem_L, l_search), dist_scratch);
     } else {
-      compute_pq_dists(&medoids[0], 1, dist_scratch);
-      add_to_retset(&medoids[0], 1, dist_scratch);
+      nbr_handler->compute_dists(query_buf, &medoid, 1);
+      add_to_retset(&medoid, 1, dist_scratch);
     }
     std::sort(retset.begin(), retset.begin() + cur_list_size);
 #endif
@@ -202,7 +191,8 @@ namespace pipeann {
       uint64_t &cur_buf_idx = query_buf->sector_idx;
       auto buf = sector_scratch + cur_buf_idx * size_per_io;
       auto &req = query_buf->reqs[cur_buf_idx];
-      req = IORequest(static_cast<_u64>(pid) * SECTOR_LEN, size_per_io, buf, u_loc_offset(loc), max_node_len);
+      req = IORequest(static_cast<uint64_t>(pid) * SECTOR_LEN, size_per_io, buf, u_loc_offset(loc), max_node_len,
+                      sector_scratch);
       reader->send_read_no_alloc(req, ctx);
 
       on_flight_ios.push(io_t{item, pid, loc, &req});
@@ -312,8 +302,8 @@ namespace pipeann {
     unsigned marker = 0, max_marker = 0;
 #ifdef OVERLAP_INIT
     if (likely(mem_L != 0)) {
-      pq_table.populate_chunk_distances_nt(query, pq_dists);  // overlap with the first I/O.
-      compute_pq_dists(mem_tags.data(), mem_L, dist_scratch);
+      nbr_handler->initialize_query(query, query_buf);
+      nbr_handler->compute_dists(query_buf, mem_tags.data(), mem_L);
       for (unsigned i = 0; i < cur_list_size; ++i) {
         retset[i].distance = dist_scratch[i];
       }
@@ -321,10 +311,7 @@ namespace pipeann {
     }
 #endif
 
-#ifndef STATIC_POLICY
     int cur_n_in = 0, cur_tot = 0;
-#endif
-
     while (get_first_unvisited() != -1) {
       // poll to heap (best-effort) -> calc best from heap (skip if heap is empty) -> send IO (if can send) -> ...
       // auto io1_st = std::chrono::high_resolution_clock::now();
@@ -332,11 +319,6 @@ namespace pipeann {
       std::ignore = n_in;
       std::ignore = n_out;
 
-#ifdef DYN_PIPE_WIDTH
-#ifdef STATIC_POLICY
-      constexpr int kBeamWidths[] = {4, 4, 8, 8, 16, 16, 24, 24, 32};
-      cur_beam_width = kBeamWidths[std::min(max_marker / 5, 8u)];
-#else
       if (max_marker >= 5 && n_in + n_out > 0) {
         cur_n_in += n_in;
         cur_tot += n_in + n_out;
@@ -348,15 +330,9 @@ namespace pipeann {
           cur_beam_width = std::min((int64_t) beam_width, cur_beam_width);
         }
       }
-#endif
-#endif
 
       if ((int64_t) on_flight_ios.size() < cur_beam_width) {
-#ifdef NAIVE_PIPE
-        send_best_read_req(cur_beam_width - on_flight_ios.size());
-#else
         send_best_read_req(1);
-#endif
       }
       // auto io1_ed = std::chrono::high_resolution_clock::now();
       // stats->io_us1 += std::chrono::duration_cast<std::chrono::microseconds>(io1_ed - io1_st).count();
@@ -364,15 +340,16 @@ namespace pipeann {
       max_marker = std::max(max_marker, marker);
     }
     auto cpu2_ed = std::chrono::high_resolution_clock::now();
-    stats->cpu_us2 = std::chrono::duration_cast<std::chrono::microseconds>(cpu2_ed - cpu2_st).count();
-    stats->cpu_us = n_computes;
-
+    if (stats != nullptr) {
+      stats->cpu_us2 = std::chrono::duration_cast<std::chrono::microseconds>(cpu2_ed - cpu2_st).count();
+      stats->cpu_us = n_computes;
+    }
     std::sort(full_retset.begin(), full_retset.end(),
               [](const Neighbor &left, const Neighbor &right) { return left < right; });
 
     // copy k_search values
-    _u64 t = 0;
-    for (_u64 i = 0; i < full_retset.size() && t < k_search; i++) {
+    uint64_t t = 0;
+    for (uint64_t i = 0; i < full_retset.size() && t < k_search; i++) {
       if (i > 0 && full_retset[i].id == full_retset[i - 1].id) {
         continue;  // deduplicate.
       }
@@ -392,6 +369,6 @@ namespace pipeann {
   }
 
   template class SSDIndex<float>;
-  template class SSDIndex<_s8>;
-  template class SSDIndex<_u8>;
+  template class SSDIndex<int8_t>;
+  template class SSDIndex<uint8_t>;
 }  // namespace pipeann

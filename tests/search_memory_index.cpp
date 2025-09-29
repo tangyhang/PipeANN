@@ -19,21 +19,21 @@ int search_memory_index(int argc, char **argv) {
   unsigned *gt_ids = nullptr;
   unsigned *gt_tags = nullptr;
   float *gt_dists = nullptr;
-  size_t query_num, query_dim, query_aligned_dim, gt_num, gt_dim;
-  std::vector<_u64> Lvec;
+  size_t query_num, query_dim, gt_num, gt_dim;
+  std::vector<uint64_t> Lvec;
 
   int arg_no = 2;
 
-  _u64 max_points = (_u64) std::atoi(argv[arg_no++]);
+  uint64_t max_points = (uint64_t) std::atoi(argv[arg_no++]);
   std::string memory_index_file(argv[arg_no++]);
   bool dynamic_index = (bool) std::atoi(argv[arg_no++]);
   bool single_index_file = (bool) std::atoi(argv[arg_no++]);
   //  std::string data_file(argv[arg_no++]);
   std::string query_bin(argv[arg_no++]);
   std::string truthset_bin(argv[arg_no++]);
-  _u64 recall_at = std::atoi(argv[arg_no++]);
+  uint64_t recall_at = std::atoi(argv[arg_no++]);
   std::string result_output_prefix(argv[arg_no++]);
-  _u32 num_threads = (_u32) std::atoi(argv[arg_no++]);
+  uint32_t num_threads = (uint32_t) std::atoi(argv[arg_no++]);
   std::string distance_metric(argv[arg_no++]);
 
   pipeann::Metric m = (distance_metric == "cosine" ? pipeann::Metric::COSINE : pipeann::Metric::L2);
@@ -45,7 +45,7 @@ int search_memory_index(int argc, char **argv) {
   bool calc_recall_flag = false;
 
   for (int ctr = arg_no; ctr < argc; ctr++) {
-    _u64 curL = std::atoi(argv[ctr]);
+    uint64_t curL = std::atoi(argv[ctr]);
     if (curL >= recall_at)
       Lvec.push_back(curL);
   }
@@ -63,7 +63,7 @@ int search_memory_index(int argc, char **argv) {
             << " similarity metric: " << (m == pipeann::Metric::COSINE ? "cosine" : "l2") << " first L: " << Lvec[0]
             << std::endl;
 
-  pipeann::load_aligned_bin<T>(query_bin, query, query_num, query_dim, query_aligned_dim);
+  pipeann::load_bin<T>(query_bin, query, query_num, query_dim);
 
   if (file_exists(truthset_bin)) {
     pipeann::load_truthset(truthset_bin, gt_ids, gt_dists, gt_num, gt_dim, &gt_tags);
@@ -99,7 +99,7 @@ int search_memory_index(int argc, char **argv) {
   std::vector<double> latency_stats(query_num, 0);
 
   for (uint32_t test_id = 0; test_id < Lvec.size(); test_id++) {
-    _u64 L = Lvec[test_id];
+    uint64_t L = Lvec[test_id];
     query_result_ids[test_id].resize(recall_at * query_num);
     query_result_tags[test_id].resize(recall_at * query_num);
     query_result_dists[test_id].resize(recall_at * query_num);
@@ -110,12 +110,11 @@ int search_memory_index(int argc, char **argv) {
     for (int64_t i = 0; i < (int64_t) query_num; i++) {
       auto qs = std::chrono::high_resolution_clock::now();
       if (dynamic_index)
-        index.search_with_tags(query + i * query_aligned_dim, (uint64_t) recall_at, (_u32) L,
+        index.search_with_tags(query + i * query_dim, (uint64_t) recall_at, (uint32_t) L,
                                query_result_ids[test_id].data() + i * recall_at,
                                query_result_dists[test_id].data() + i * recall_at);
       else
-        index.search(query + i * query_aligned_dim, recall_at, (_u32) L,
-                     query_result_ids[test_id].data() + i * recall_at);
+        index.search(query + i * query_dim, recall_at, (uint32_t) L, query_result_ids[test_id].data() + i * recall_at);
       auto qe = std::chrono::high_resolution_clock::now();
       std::chrono::duration<double> diff = qe - qs;
       latency_stats[i] = diff.count() * 1000;
@@ -128,9 +127,9 @@ int search_memory_index(int argc, char **argv) {
     float recall = 0;
     if (calc_recall_flag)
 
-      recall = (float) pipeann::calculate_recall((_u32) query_num, gt_tags, gt_dists, (_u32) gt_dim,
-                                                 query_result_ids[test_id].data(), (_u32) recall_at, (_u32) recall_at,
-                                                 active_tags);
+      recall = (float) pipeann::calculate_recall((uint32_t) query_num, gt_tags, gt_dists, (uint32_t) gt_dim,
+                                                 query_result_ids[test_id].data(), (uint32_t) recall_at,
+                                                 (uint32_t) recall_at, active_tags);
 
     std::sort(latency_stats.begin(), latency_stats.end());
     double mean_latency = 0;
@@ -140,15 +139,15 @@ int search_memory_index(int argc, char **argv) {
     mean_latency /= (double) query_num;
 
     std::cout << std::setw(4) << L << std::setw(12) << qps << std::setw(18) << (float) mean_latency << std::setw(15)
-              << (float) latency_stats[(_u64) (0.999 * (double) query_num)] << std::setw(12) << recall << std::endl;
+              << (float) latency_stats[(uint64_t) (0.999 * (double) query_num)] << std::setw(12) << recall << std::endl;
   }
 
   std::cout << "Done searching. Now saving results " << std::endl;
-  _u64 test_id = 0;
+  uint64_t test_id = 0;
 
   for (auto L : Lvec) {
     std::string cur_result_path = result_output_prefix + "_" + std::to_string(L) + "_idx_uint32.bin";
-    pipeann::save_bin<_u32>(cur_result_path, query_result_ids[test_id].data(), query_num, recall_at);
+    pipeann::save_bin<uint32_t>(cur_result_path, query_result_ids[test_id].data(), query_num, recall_at);
     test_id++;
   }
 

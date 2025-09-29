@@ -6,7 +6,7 @@
 // #include <rocksdb/utilities/transaction.h>
 #include <string>
 #include "utils.h"
-#include "libcuckoo/cuckoohash_map.hh"
+#include "utils/libcuckoo/cuckoohash_map.hh"
 
 namespace v2 {
   // using namespace rocksdb;

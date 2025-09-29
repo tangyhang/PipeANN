@@ -4,13 +4,13 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
-#include "tsl/robin_set.h"
-#include "tsl/robin_map.h"
-#include "v2/lock_table.h"
+#include "utils/percentile_stats.h"
+#include "utils/tsl/robin_set.h"
+#include "utils/tsl/robin_map.h"
+#include "utils/lock_table.h"
 
 #include "distance.h"
 #include "neighbor.h"
-#include "parameters.h"
 #include "utils.h"
 
 #include "neighbor.h"
@@ -39,10 +39,10 @@ namespace pipeann {
     // tags.
     void save(const char *filename);
 
-    _u64 save_graph(std::string filename, size_t offset = 0);
-    _u64 save_data(std::string filename, size_t offset = 0);
-    _u64 save_tags(std::string filename, size_t offset = 0);
-    _u64 save_delete_list(const std::string &filename, size_t offset = 0);
+    uint64_t save_graph(std::string filename, size_t offset = 0);
+    uint64_t save_data(std::string filename, size_t offset = 0, bool frozen = true);
+    uint64_t save_tags(std::string filename, size_t offset = 0, bool frozen = true);
+    uint64_t save_delete_list(const std::string &filename, size_t offset = 0);
 
     void load(const char *index_file);
 
@@ -65,7 +65,7 @@ namespace pipeann {
     // Added search overload that takes L as parameter, so that we
     // can customize L on a per-query basis without tampering with "Parameters"
     std::pair<uint32_t, uint32_t> search(const T *query, const size_t K, const unsigned L, unsigned *indices,
-                                         float *distances = nullptr);
+                                         float *distances = nullptr, QueryStats *stats = nullptr);
 
     std::pair<uint32_t, uint32_t> search(const T *query, const uint64_t K, const unsigned L,
                                          std::vector<unsigned> init_ids, uint64_t *indices, float *distances);
@@ -148,7 +148,8 @@ namespace pipeann {
                                                          const std::vector<unsigned> &init_ids,
                                                          std::vector<Neighbor> &expanded_nodes_info,
                                                          tsl::robin_set<unsigned> &expanded_nodes_ids,
-                                                         std::vector<Neighbor> &best_L_nodes, bool ret_frozen = true);
+                                                         std::vector<Neighbor> &best_L_nodes, bool ret_frozen = true,
+                                                         QueryStats *stats = nullptr);
 
     void get_expanded_nodes(const size_t node, const unsigned Lindex, std::vector<unsigned> init_ids,
                             std::vector<Neighbor> &expanded_nodes_info, tsl::robin_set<unsigned> &expanded_nodes_ids);
@@ -168,7 +169,6 @@ namespace pipeann {
 
     // Support for Incremental Indexing
     int reserve_location();
-    void release_location();
 
     // Support for resizing the index
     // This function must be called ONLY after taking the _change_lock and

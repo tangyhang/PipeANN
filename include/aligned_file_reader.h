@@ -4,8 +4,8 @@
 
 #include <fcntl.h>
 #include <unistd.h>
-#include "v2/page_cache.h"
-#include "query_buf.h"
+#include "utils/page_cache.h"
+#include "ssd_index_defs.h"
 
 #include <malloc.h>
 #include <cstdio>
@@ -20,6 +20,9 @@ class AlignedFileReader {
   virtual void *get_ctx(int flag = 0) = 0;
 
   virtual ~AlignedFileReader() {};
+
+  // register buffer (e.g., pin memory)
+  virtual void register_buf(void *buf, uint64_t buf_size, int mrid) = 0;
 
   // Open & close ops
   // Blocking calls

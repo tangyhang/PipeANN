@@ -3,10 +3,11 @@
 #include <ssd_index.h>
 #include <string.h>
 #include <time.h>
-#include <iostream>
+#include <iomanip>
 
-#include "log.h"
-#include "timer.h"
+#include "utils/log.h"
+#include "nbr/abstract_nbr.h"
+#include "utils/timer.h"
 #include "utils.h"
 #include "aux_utils.h"
 
@@ -38,21 +39,21 @@ int search_disk_index(int argc, char **argv) {
   float *gt_dists = nullptr;
   uint32_t *tags = nullptr;
   size_t query_num, query_dim, gt_num, gt_dim;
-  std::vector<_u64> Lvec;
+  std::vector<uint64_t> Lvec;
 
   bool tags_flag = true;
 
   int index = 2;
   std::string index_prefix_path(argv[index++]);
-  _u32 num_threads = std::atoi(argv[index++]);
-  _u32 beamwidth = std::atoi(argv[index++]);
+  uint32_t num_threads = std::atoi(argv[index++]);
+  uint32_t beamwidth = std::atoi(argv[index++]);
   std::string query_bin(argv[index++]);
   std::string truthset_bin(argv[index++]);
-  _u64 recall_at = std::atoi(argv[index++]);
+  uint64_t recall_at = std::atoi(argv[index++]);
   std::string dist_metric(argv[index++]);
   int search_mode = std::atoi(argv[index++]);
   bool use_page_search = search_mode != 0;
-  _u32 mem_L = std::atoi(argv[index++]);
+  uint32_t mem_L = std::atoi(argv[index++]);
 
   pipeann::Metric m = dist_metric == "cosine" ? pipeann::Metric::COSINE : pipeann::Metric::L2;
   if (dist_metric != "l2" && m == pipeann::Metric::L2) {
@@ -64,7 +65,7 @@ int search_disk_index(int argc, char **argv) {
   bool calc_recall_flag = false;
 
   for (int ctr = index; ctr < argc; ctr++) {
-    _u64 curL = std::atoi(argv[ctr]);
+    uint64_t curL = std::atoi(argv[ctr]);
     if (curL >= recall_at)
       Lvec.push_back(curL);
   }
@@ -81,7 +82,6 @@ int search_disk_index(int argc, char **argv) {
     std::cout << " beamwidth: " << beamwidth << std::endl;
 
   pipeann::load_bin<T>(query_bin, query, query_num, query_dim);
-  // std::load_aligned_bin<T>(query_bin, query, query_num, query_dim, query_aligned_dim);
 
   if (file_exists(truthset_bin)) {
     pipeann::load_truthset(truthset_bin, gt_ids, gt_dists, gt_num, gt_dim, &tags);
@@ -93,9 +93,8 @@ int search_disk_index(int argc, char **argv) {
 
   std::shared_ptr<AlignedFileReader> reader = nullptr;
   reader.reset(new LinuxAlignedFileReader());
-
-  std::unique_ptr<pipeann::SSDIndex<T>> _pFlashIndex(
-      new pipeann::SSDIndex<T>(m, reader, SearchMode(search_mode), tags_flag));
+  pipeann::AbstractNeighbor<T> *nbr_handler = new pipeann::PQNeighbor<T>();
+  std::unique_ptr<pipeann::SSDIndex<T>> _pFlashIndex(new pipeann::SSDIndex<T>(m, reader, nbr_handler, tags_flag));
 
   int res = _pFlashIndex->load(index_prefix_path.c_str(), num_threads, true, use_page_search);
   if (res != 0) {
@@ -116,7 +115,7 @@ int search_disk_index(int argc, char **argv) {
 
   auto run_tests = [&](uint32_t test_id, bool output) {
     pipeann::QueryStats *stats = new pipeann::QueryStats[query_num];
-    _u64 L = Lvec[test_id];
+    uint64_t L = Lvec[test_id];
 
     query_result_ids[test_id].resize(recall_at * query_num);
     query_result_dists[test_id].resize(recall_at * query_num);
@@ -128,7 +127,7 @@ int search_disk_index(int argc, char **argv) {
 
     if (search_mode == SearchMode::PIPE_SEARCH) {
 #pragma omp parallel for schedule(dynamic, 1)
-      for (_s64 i = 0; i < (int64_t) query_num; i++) {
+      for (int64_t i = 0; i < (int64_t) query_num; i++) {
         _pFlashIndex->pipe_search(query + (i * query_dim), (uint64_t) recall_at, mem_L, (uint64_t) L,
                                   query_result_tags_32.data() + (i * recall_at),
                                   query_result_dists[test_id].data() + (i * recall_at), (uint64_t) beamwidth,
@@ -136,7 +135,7 @@ int search_disk_index(int argc, char **argv) {
       }
     } else if (search_mode == SearchMode::PAGE_SEARCH) {
 #pragma omp parallel for schedule(dynamic, 1)
-      for (_s64 i = 0; i < (int64_t) query_num; i++) {
+      for (int64_t i = 0; i < (int64_t) query_num; i++) {
         _pFlashIndex->page_search(query + (i * query_dim), (uint64_t) recall_at, mem_L, (uint64_t) L,
                                   query_result_tags_32.data() + (i * recall_at),
                                   query_result_dists[test_id].data() + (i * recall_at), (uint64_t) beamwidth,
@@ -149,7 +148,7 @@ int search_disk_index(int argc, char **argv) {
       float *res_dists[kBatchSize];
       int N;
 #pragma omp parallel for schedule(dynamic, 1) private(q, res_tags, res_dists, N)
-      for (_s64 i = 0; i < (int64_t) query_num; i += kBatchSize) {
+      for (int64_t i = 0; i < (int64_t) query_num; i += kBatchSize) {
         N = std::min(kBatchSize, query_num - i);
         for (int v = 0; v < N; ++v) {
           q[v] = query + ((i + v) * query_dim);
@@ -162,7 +161,7 @@ int search_disk_index(int argc, char **argv) {
       }
     } else if (search_mode == SearchMode::BEAM_SEARCH) {
 #pragma omp parallel for schedule(dynamic, 1)
-      for (_s64 i = 0; i < (int64_t) query_num; i++) {
+      for (int64_t i = 0; i < (int64_t) query_num; i++) {
         _pFlashIndex->beam_search(query + (i * query_dim), (uint64_t) recall_at, mem_L, (uint64_t) L,
                                   query_result_tags_32.data() + (i * recall_at),
                                   query_result_dists[test_id].data() + (i * recall_at), (uint64_t) beamwidth, stats + i,
@@ -199,9 +198,9 @@ int search_disk_index(int argc, char **argv) {
       if (calc_recall_flag) {
         /* Attention: in SPACEV, there may be multiple vectors with the same distance,
           which may cause lower than expected recall@1 (?) */
-        recall =
-            (float) pipeann::calculate_recall((_u32) query_num, gt_ids, gt_dists, (_u32) gt_dim,
-                                              query_result_tags[test_id].data(), (_u32) recall_at, (_u32) recall_at);
+        recall = (float) pipeann::calculate_recall((uint32_t) query_num, gt_ids, gt_dists, (uint32_t) gt_dim,
+                                                   query_result_tags[test_id].data(), (uint32_t) recall_at,
+                                                   (uint32_t) recall_at);
       }
 
       std::cout << std::setw(6) << L << std::setw(12) << beamwidth << std::setw(12) << qps << std::setw(12)
@@ -213,13 +212,13 @@ int search_disk_index(int argc, char **argv) {
     }
   };
 
-  LOG(INFO) << "Use two ANNS for warming up...";
-  uint32_t prev_L = Lvec[0];
-  Lvec[0] = 200;
-  run_tests(0, false);
-  run_tests(0, false);
-  Lvec[0] = prev_L;
-  LOG(INFO) << "Warming up finished.";
+  // LOG(INFO) << "Use two ANNS for warming up...";
+  // uint32_t prev_L = Lvec[0];
+  // Lvec[0] = 200;
+  // run_tests(0, false);
+  // run_tests(0, false);
+  // Lvec[0] = prev_L;
+  // LOG(INFO) << "Warming up finished.";
 
   std::cout.setf(std::ios_base::fixed, std::ios_base::floatfield);
   std::cout.precision(2);

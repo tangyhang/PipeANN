@@ -4,77 +4,30 @@
 #include <cstdint>
 #include <string>
 #include <set>
-#include "v2/page_cache.h"
-#include <iostream>
-#include <iomanip>
+#include "nbr/abstract_nbr.h"
 #include <omp.h>
 
 #include "aligned_file_reader.h"
-#include "concurrent_queue.h"
-#include "parameters.h"
-#include "percentile_stats.h"
-#include "pq_table.h"
+#include "utils/concurrent_queue.h"
+#include "utils/percentile_stats.h"
+#include "nbr/pq_nbr.h"
 #include "utils.h"
 #include "neighbor.h"
 #include "index.h"
 
 #define MAX_N_CMPS 16384
-#define MAX_N_EDGES 512
-#define MAX_PQ_CHUNKS 128
-#define SECTOR_LEN 4096
+#define MAX_N_EDGES 1024
 
 constexpr int kIndexSizeFactor = 2;
 
 enum SearchMode { BEAM_SEARCH = 0, PAGE_SEARCH = 1, PIPE_SEARCH = 2, CORO_SEARCH = 3 };
 
-namespace {
-  inline void aggregate_coords(const unsigned *ids, const _u64 n_ids, const _u8 *all_coords, const _u64 ndims,
-                               _u8 *out) {
-    for (_u64 i = 0; i < n_ids; i++) {
-      memcpy(out + i * ndims, all_coords + ids[i] * ndims, ndims * sizeof(_u8));
-    }
-  }
-
-  inline void prefetch_chunk_dists(const float *ptr) {
-    _mm_prefetch((char *) ptr, _MM_HINT_NTA);
-    _mm_prefetch((char *) (ptr + 64), _MM_HINT_NTA);
-    _mm_prefetch((char *) (ptr + 128), _MM_HINT_NTA);
-    _mm_prefetch((char *) (ptr + 192), _MM_HINT_NTA);
-  }
-
-  inline void pq_dist_lookup(const _u8 *pq_ids, const _u64 n_pts, const _u64 pq_nchunks, const float *pq_dists,
-                             float *dists_out) {
-    _mm_prefetch((char *) dists_out, _MM_HINT_T0);
-    _mm_prefetch((char *) pq_ids, _MM_HINT_T0);
-    _mm_prefetch((char *) (pq_ids + 64), _MM_HINT_T0);
-    _mm_prefetch((char *) (pq_ids + 128), _MM_HINT_T0);
-
-    prefetch_chunk_dists(pq_dists);
-    memset(dists_out, 0, n_pts * sizeof(float));
-    for (_u64 chunk = 0; chunk < pq_nchunks; chunk++) {
-      const float *chunk_dists = pq_dists + 256 * chunk;
-      if (chunk < pq_nchunks - 1) {
-        prefetch_chunk_dists(chunk_dists + 256);
-      }
-      for (_u64 idx = 0; idx < n_pts; idx++) {
-        _u8 pq_centerid = pq_ids[pq_nchunks * idx + chunk];
-        dists_out[idx] += chunk_dists[pq_centerid];
-      }
-    }
-  }
-}  // namespace
-
 namespace pipeann {
-
-#define READ_U64(stream, val) stream.read((char *) &val, sizeof(_u64))
-#define READ_U32(stream, val) stream.read((char *) &val, sizeof(_u32))
-#define READ_UNSIGNED(stream, val) stream.read((char *) &val, sizeof(unsigned))
-
   template<typename T, typename TagT = uint32_t>
   class SSDIndex {
    public:
-    SSDIndex(pipeann::Metric m, std::shared_ptr<AlignedFileReader> &fileReader, bool single_file_index,
-             bool tags = false, Parameters *parameters = nullptr);
+    SSDIndex(pipeann::Metric m, std::shared_ptr<AlignedFileReader> &fileReader,
+             AbstractNeighbor<T> *nbr = new PQNeighbor<T>(), bool tags = false, Parameters *parameters = nullptr);
 
     ~SSDIndex();
 
@@ -83,7 +36,7 @@ namespace pipeann {
       return (T *) node_buf;
     }
 
-    // returns region of `node_buf` containing [NNBRS][NBR_ID(_u32)]
+    // returns region of `node_buf` containing [NNBRS][NBR_ID(uint32_t)]
     inline unsigned *offset_to_node_nhood(const char *node_buf) {
       return (unsigned *) (node_buf + data_dim * sizeof(T));
     }
@@ -104,7 +57,7 @@ namespace pipeann {
 
     // unaligned offset to location
     inline uint64_t u_loc_offset(uint64_t loc) {
-      return loc * max_node_len;  // compacted store.
+      return loc * max_node_len;
     }
 
     inline uint64_t u_loc_offset_nbr(uint64_t loc) {
@@ -124,18 +77,58 @@ namespace pipeann {
       return (sector_no - 1) * nnodes_per_sector + sector_off;
     }
 
+    void init_metadata(const SSDIndexMetadata<T> &meta) {
+      meta.print();
+      this->cur_id = this->num_points = this->init_num_pts = meta.npoints;
+      this->data_dim = meta.data_dim;
+      this->aligned_dim = ROUND_UP(this->data_dim, 8);
+      this->range = meta.range;
+      this->max_node_len = meta.max_node_len;
+      this->nnodes_per_sector = meta.nnodes_per_sector;  // this makes reading to zero offset correct.
+      this->size_per_io = SECTOR_LEN * (nnodes_per_sector > 0 ? 1 : DIV_ROUND_UP(max_node_len, SECTOR_LEN));
+      LOG(INFO) << "Size per IO: " << size_per_io;
+
+      if (nnodes_per_sector > this->kMaxElemInAPage) {
+        LOG(ERROR) << "nnodes_per_sector: " << nnodes_per_sector << " is greater than " << this->kMaxElemInAPage
+                   << ". Please recompile with a higher value of kMaxElemInAPage.";
+        exit(-1);
+      }
+
+      this->cur_loc = num_points;
+      // aligned.
+      if (num_points % nnodes_per_sector != 0) {
+        cur_loc += nnodes_per_sector - (num_points % nnodes_per_sector);
+      }
+      LOG(INFO) << "Cur location: " << this->cur_loc;
+
+      // update-related metadata, if not initialized in params, initialize here.
+      if (l_index < meta.range) {
+        // experience values.
+        LOG(INFO) << "Automatically set the update-related parameters.";
+        this->l_index = meta.range + 32;
+        this->beam_width = 4;
+        this->maxc = 750;
+        this->alpha = 1.2;
+        LOG(INFO) << "L_index: " << this->l_index << " beam_width: " << this->beam_width << " maxc: " << this->maxc
+                  << " alpha: " << this->alpha;
+      }
+      medoid = meta.entry_point;
+    }
+
     void init_query_buf(QueryBuffer<T> &buf) {
-      _u64 coord_alloc_size = ROUND_UP(MAX_N_CMPS * this->aligned_dim, 256);
+      uint64_t coord_alloc_size = ROUND_UP(MAX_N_CMPS * this->aligned_dim, 256);
       pipeann::alloc_aligned((void **) &buf.coord_scratch, coord_alloc_size, 256);
       pipeann::alloc_aligned((void **) &buf.sector_scratch, MAX_N_SECTOR_READS * SECTOR_LEN, SECTOR_LEN);
-      pipeann::alloc_aligned((void **) &buf.aligned_pq_coord_scratch, 32768 * 32 * sizeof(_u8), 256);
-      pipeann::alloc_aligned((void **) &buf.aligned_pqtable_dist_scratch, 256 * MAX_PQ_CHUNKS * sizeof(float), 256);
-      pipeann::alloc_aligned((void **) &buf.aligned_dist_scratch, 512 * sizeof(float), 256);
+      pipeann::alloc_aligned((void **) &buf.nbr_vec_scratch,
+                             MAX_N_EDGES * AbstractNeighbor<T>::MAX_BYTES_PER_NBR * sizeof(uint8_t), 256);
+      pipeann::alloc_aligned((void **) &buf.nbr_ctx_scratch,
+                             256 * AbstractNeighbor<T>::MAX_BYTES_PER_NBR * sizeof(float), 256);
+      pipeann::alloc_aligned((void **) &buf.aligned_dist_scratch, MAX_N_EDGES * sizeof(float), 256);
       pipeann::alloc_aligned((void **) &buf.aligned_query_T, this->aligned_dim * sizeof(T), 8 * sizeof(T));
       pipeann::alloc_aligned((void **) &buf.update_buf, (2 * MAX_N_EDGES + 1) * SECTOR_LEN,
                              SECTOR_LEN);  // 2x for read + write
 
-      buf.visited = new tsl::robin_set<_u64>(4096);
+      buf.visited = new tsl::robin_set<uint64_t>(4096);
       buf.page_visited = new tsl::robin_set<unsigned>(4096);
 
       memset(buf.sector_scratch, 0, MAX_N_SECTOR_READS * SECTOR_LEN);
@@ -176,84 +169,56 @@ namespace pipeann {
 
     void load_mem_index(Metric metric, const size_t query_dim, const std::string &mem_index_path);
 
-    void load_page_layout(const std::string &index_prefix, const _u64 nnodes_per_sector = 0, const _u64 num_points = 0);
+    // This function loads id2loc and loc2id (i.e., page_layout), to support index reordering.
+    void load_page_layout(const std::string &index_prefix, const uint64_t nnodes_per_sector = 0,
+                          const uint64_t num_points = 0);
 
     void load_tags(const std::string &tag_file, size_t offset = 0);
 
-    _u64 return_nd();
+    uint64_t return_nd();
 
     // search supporting update.
-    size_t beam_search(const T *query, const _u64 k_search, const _u32 mem_L, const _u64 l_search, TagT *res_tags,
-                       float *res_dists, const _u64 beam_width, QueryStats *stats = nullptr,
+    size_t beam_search(const T *query, const uint64_t k_search, const uint32_t mem_L, const uint64_t l_search,
+                       TagT *res_tags, float *res_dists, const uint64_t beam_width, QueryStats *stats = nullptr,
                        tsl::robin_set<uint32_t> *deleted_nodes = nullptr, bool dyn_search_l = true);
 
-    size_t coro_search(T **queries, const _u64 k_search, const _u32 mem_L, const _u64 l_search, TagT **res_tags,
-                       float **res_dists, const _u64 beam_width, int N);
+    size_t coro_search(T **queries, const uint64_t k_search, const uint32_t mem_L, const uint64_t l_search,
+                       TagT **res_tags, float **res_dists, const uint64_t beam_width, int N);
 
     // read-only search algorithms.
-    size_t page_search(const T *query, const _u64 k_search, const _u32 mem_L, const _u64 l_search, TagT *res_tags,
-                       float *res_dists, const _u64 beam_width, QueryStats *stats = nullptr);
+    size_t page_search(const T *query, const uint64_t k_search, const uint32_t mem_L, const uint64_t l_search,
+                       TagT *res_tags, float *res_dists, const uint64_t beam_width, QueryStats *stats = nullptr);
 
-    size_t pipe_search(const T *query, const _u64 k_search, const _u32 mem_L, const _u64 l_search, TagT *res_tags,
-                       float *res_dists, const _u64 beam_width, QueryStats *stats = nullptr);
-
-    std::vector<uint32_t> get_init_ids() {
-      return std::vector<uint32_t>(this->medoids, this->medoids + this->num_medoids);
-    }
-
-    // computes PQ dists between src->[ids] into fp_dists (merge, insert)
-    void compute_pq_dists(const _u32 src, const _u32 *ids, float *fp_dists, const _u32 count,
-                          uint8_t *aligned_scratch = nullptr);
+    size_t pipe_search(const T *query, const uint64_t k_search, const uint32_t mem_L, const uint64_t l_search,
+                       TagT *res_tags, float *res_dists, const uint64_t beam_width, QueryStats *stats = nullptr);
 
     // deflates `vec` into PQ ids
-    std::vector<_u8> deflate_vector(const T *vec);
-    std::pair<_u8 *, _u32> get_pq_config() {
-      return std::make_pair(this->data.data(), (uint32_t) this->n_chunks);
-    }
-
-    _u64 get_num_frozen_points() {
-      return this->num_frozen_points;
-    }
-
-    _u64 get_frozen_loc() {
-      return this->frozen_location;
-    }
+    std::vector<uint8_t> deflate_vector(const T *vec);
 
     // index info
     // nhood of node `i` is in sector: [i / nnodes_per_sector]
     // offset in sector: [(i % nnodes_per_sector) * max_node_len]
     // nnbrs of node `i`: *(unsigned*) (buf)
     // nbrs of node `i`: ((unsigned*)buf) + 1
-    _u64 max_node_len = 0, nnodes_per_sector = 0, max_degree = 0;
+    uint64_t max_node_len = 0, nnodes_per_sector = 0, max_degree = 0;
 
    protected:
-    void use_medoids_data_as_centroids();
-    void init_buffers(_u64 nthreads);
-    void destroy_thread_data();
+    void init_buffers(uint64_t nthreads);
+    void destroy_buffers();
 
    public:
     // data info
-    _u64 num_points = 0;
-    _u64 init_num_pts = 0;
-    _u64 num_frozen_points = 0;
-    _u64 frozen_location = 0;
-    _u64 data_dim = 0;
-    _u64 aligned_dim = 0;
-    _u64 size_per_io = 0;
+    uint64_t num_points = 0;
+    uint64_t init_num_pts = 0;
+    uint64_t data_dim = 0;
+    uint64_t aligned_dim = 0;
+    uint64_t size_per_io = 0;
 
     std::string _disk_index_file;
 
     std::shared_ptr<AlignedFileReader> &reader;
 
-    // PQ data
-    // n_chunks = # of chunks ndims is split into
-    // data: _u8 * n_chunks
-    // chunk_size = chunk size of each dimension chunk
-    // pq_tables = float* [[2^8 * [chunk_size]] * n_chunks]
-    std::vector<_u8> data;
-    _u64 chunk_size;
-    _u64 n_chunks;
-    FixedChunkPQTable<T> pq_table;
+    AbstractNeighbor<T> *nbr_handler;
 
     // distance comparator
     std::shared_ptr<Distance<T>> dist_cmp;
@@ -261,12 +226,6 @@ namespace pipeann {
    public:
     // in-place update.
     int insert_in_place(const T *point, const TagT &tag, tsl::robin_set<uint32_t> *deletion_set = nullptr);
-
-    void disk_iterate_to_fixed_point_dyn(const T *vec, const uint32_t Lsize, const uint32_t beam_width,
-                                         std::vector<Neighbor> &expanded_nodes_info,
-                                         tsl::robin_map<uint32_t, T *> *coord_map, QueryStats *stats,
-                                         QueryBuffer<T> *passthrough_data, tsl::robin_set<uint32_t> *exclude_nodes,
-                                         std::vector<uint64_t> *page_ref);
     void do_beam_search(const T *vec, uint32_t mem_L, uint32_t Lsize, const uint32_t beam_width,
                         std::vector<Neighbor> &expanded_nodes_info, tsl::robin_map<uint32_t, T *> *coord_map = nullptr,
                         QueryStats *stats = nullptr, tsl::robin_set<uint32_t> *exclude_nodes = nullptr,
@@ -301,6 +260,7 @@ namespace pipeann {
       std::vector<IORequest> writes;
       std::vector<uint64_t> pages_to_unlock;
       std::vector<uint64_t> pages_to_deref;
+      bool terminate = false;
     };
     // its concurrency should not be the bottleneck.
     ConcurrentQueue<BgTask *> bg_tasks = ConcurrentQueue<BgTask *>(nullptr);
@@ -312,7 +272,6 @@ namespace pipeann {
     uint32_t beam_width, l_index, range, maxc;
     float alpha;
     // assumed max thread, only the first nthreads are initialized.
-    AlignedFileReader *pq_reader = nullptr;
     v2::SparseLockTable<uint64_t> page_lock_table, vec_lock_table, page_idx_lock_table, idx_lock_table;
     std::shared_mutex merge_lock;  // serve search during merge.
 
@@ -470,7 +429,7 @@ namespace pipeann {
       return loc_sector_no(loc);
     }
 
-    static constexpr uint32_t kMaxElemInAPage = 16;
+    static constexpr uint32_t kMaxElemInAPage = 12;
     using PageArr = std::array<uint32_t, kMaxElemInAPage>;
     libcuckoo::cuckoohash_map<uint32_t, PageArr> page_layout;  // page_id (start from loc_sector_no(0)) -> ids
 
@@ -650,7 +609,7 @@ namespace pipeann {
       }
       LOG(INFO) << "loc2ID consistency check passed.";
     }
-    std::atomic<_u64> cur_id, cur_loc;
+    std::atomic<uint64_t> cur_id, cur_loc;
 
     // merge deletes (NOTE: index read-only during merge.)
     void merge_deletes(const std::string &in_path_prefix, const std::string &out_path_prefix,
@@ -660,6 +619,7 @@ namespace pipeann {
     void write_metadata_and_pq(const std::string &in_path_prefix, const std::string &out_path_prefix,
                                const uint64_t &new_npoints, const uint64_t &new_medoid,
                                std::vector<TagT> *new_tags = nullptr);
+    void copy_index(const std::string &prefix_in, const std::string &prefix_out);
 
    private:
     // Are we dealing with normalized data? This will be true
@@ -670,15 +630,13 @@ namespace pipeann {
     bool data_is_normalized = false;
 
     // medoid/start info
-    uint32_t *medoids = nullptr;  // by default it is just one entry point of graph, we
-                                  // can optionally have multiple starting points
-    size_t num_medoids = 1;       // by default it is set to 1
+    uint32_t medoid = 0;  // 1 entry point.
 
     // thread-specific scratch
     ConcurrentQueue<QueryBuffer<T> *> thread_data_queue;
     std::vector<QueryBuffer<T> *> thread_data_bufs;  // pre-allocated thread data
     std::vector<uint8_t *> thread_pq_bufs;           // for merge deletes
-    _u64 max_nthreads;
+    uint64_t max_nthreads;
 
     bool load_flag = false;    // already loaded.
     bool enable_tags = false;  // support for tags and dynamic indexing

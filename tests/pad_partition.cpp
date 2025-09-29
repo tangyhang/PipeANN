@@ -1,8 +1,8 @@
 #include <omp.h>
 #include <cstring>
 #include <ctime>
-#include <timer.h>
-#include "log.h"
+#include "utils/timer.h"
+#include "utils/log.h"
 
 #include "ssd_index.h"
 #include "utils.h"
@@ -23,13 +23,13 @@ int main(int argc, char **argv) {
 
   std::ifstream part(partition_file);
   std::ofstream out_part(out_partition_file.data(), std::ios::binary);
-  _u64 C, partition_nums, nd;
-  part.read((char *) &C, sizeof(_u64));
-  part.read((char *) &partition_nums, sizeof(_u64));
-  part.read((char *) &nd, sizeof(_u64));
-  out_part.write((char *) &C, sizeof(_u64));
-  out_part.write((char *) &partition_nums, sizeof(_u64));
-  out_part.write((char *) &nd, sizeof(_u64));
+  uint64_t C, partition_nums, nd;
+  part.read((char *) &C, sizeof(uint64_t));
+  part.read((char *) &partition_nums, sizeof(uint64_t));
+  part.read((char *) &nd, sizeof(uint64_t));
+  out_part.write((char *) &C, sizeof(uint64_t));
+  out_part.write((char *) &partition_nums, sizeof(uint64_t));
+  out_part.write((char *) &nd, sizeof(uint64_t));
 
   uint32_t tmp_arr[4096];
   for (unsigned i = 0; i < partition_nums; i++) {

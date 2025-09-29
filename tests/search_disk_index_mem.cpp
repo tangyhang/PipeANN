@@ -8,12 +8,12 @@
 #include <time.h>
 
 #include "distance.h"
-#include "log.h"
+#include "utils/log.h"
 #include "aux_utils.h"
 #include "index.h"
 #include "math_utils.h"
-#include "partition_and_pq.h"
-#include "timer.h"
+#include "partition.h"
+#include "utils/timer.h"
 #include "utils.h"
 
 #include <sys/mman.h>
@@ -44,18 +44,18 @@ int search_disk_index(int argc, char **argv) {
   float *gt_dists = nullptr;
   uint32_t *tags = nullptr;
   size_t query_num, query_dim, gt_num, gt_dim;
-  std::vector<_u64> Lvec;
+  std::vector<uint64_t> Lvec;
 
   int index = 2;
   std::string index_prefix_path(argv[index++]);
   std::string warmup_query_file = index_prefix_path + "_sample_data.bin";
   std::ignore = std::atoi(argv[index++]) != 0;
   std::ignore = std::atoi(argv[index++]);
-  _u32 num_threads = std::atoi(argv[index++]);
-  _u32 beamwidth = std::atoi(argv[index++]);
+  uint32_t num_threads = std::atoi(argv[index++]);
+  uint32_t beamwidth = std::atoi(argv[index++]);
   std::string query_bin(argv[index++]);
   std::string truthset_bin(argv[index++]);
-  _u64 recall_at = std::atoi(argv[index++]);
+  uint64_t recall_at = std::atoi(argv[index++]);
   std::string result_output_prefix(argv[index++]);
   std::string dist_metric(argv[index++]);
   int search_mode = std::atoi(argv[index++]);
@@ -72,7 +72,7 @@ int search_disk_index(int argc, char **argv) {
   bool calc_recall_flag = false;
 
   for (int ctr = index; ctr < argc; ctr++) {
-    _u64 curL = std::atoi(argv[ctr]);
+    uint64_t curL = std::atoi(argv[ctr]);
     if (curL >= recall_at)
       Lvec.push_back(curL);
   }
@@ -89,7 +89,6 @@ int search_disk_index(int argc, char **argv) {
     std::cout << " beamwidth: " << beamwidth << std::endl;
 
   pipeann::load_bin<T>(query_bin, query, query_num, query_dim);
-  // pipeann::load_aligned_bin<T>(query_bin, query, query_num, query_dim, query_aligned_dim);
 
   if (file_exists(truthset_bin)) {
     pipeann::load_truthset(truthset_bin, gt_ids, gt_dists, gt_num, gt_dim, &tags);
@@ -131,7 +130,7 @@ int search_disk_index(int argc, char **argv) {
   std::vector<std::vector<float>> query_result_dists(Lvec.size());
 
   for (uint32_t test_id = 0; test_id < Lvec.size(); test_id++) {
-    _u64 L = Lvec[test_id];
+    uint64_t L = Lvec[test_id];
 
     query_result_ids[test_id].resize(recall_at * query_num);
     query_result_dists[test_id].resize(recall_at * query_num);
@@ -144,10 +143,10 @@ int search_disk_index(int argc, char **argv) {
     auto s = std::chrono::high_resolution_clock::now();
 
 #pragma omp parallel for schedule(dynamic, 1)
-    for (_s64 i = 0; i < (int64_t) query_num; i++) {
+    for (int64_t i = 0; i < (int64_t) query_num; i++) {
       auto s1 = std::chrono::high_resolution_clock::now();
       _pFlashIndex.search(query + (i * query_dim), recall_at, L, query_result_tags_32.data() + (i * recall_at),
-                          query_result_dists[test_id].data() + (i * recall_at));
+                          query_result_dists[test_id].data() + (i * recall_at), &stats[i]);
       auto e1 = std::chrono::high_resolution_clock::now();
       stats[i].total_us = std::chrono::duration_cast<std::chrono::microseconds>(e1 - s1).count();
     }
@@ -191,8 +190,9 @@ int search_disk_index(int argc, char **argv) {
     if (calc_recall_flag) {
       /* Attention: in SPACEV, there may be multiple vectors with the same distance,
          which may cause lower than expected recall@1 (?) */
-      recall = (float) pipeann::calculate_recall((_u32) query_num, gt_ids, gt_dists, (_u32) gt_dim,
-                                                 query_result_tags[test_id].data(), (_u32) recall_at, (_u32) recall_at);
+      recall = (float) pipeann::calculate_recall((uint32_t) query_num, gt_ids, gt_dists, (uint32_t) gt_dim,
+                                                 query_result_tags[test_id].data(), (uint32_t) recall_at,
+                                                 (uint32_t) recall_at);
     }
 
     std::cout << std::setw(6) << L << std::setw(12) << 1 << std::setw(12) << qps << std::setw(12) << mean_latency
@@ -206,13 +206,13 @@ int search_disk_index(int argc, char **argv) {
   // std::this_thread::sleep_for(std::chrono::seconds(10));
 
   // std::cout << "Done searching. Now saving results " << std::endl;
-  // _u64 test_id = 0;
+  // uint64_t test_id = 0;
   // for (auto L : Lvec) {
   //   std::string cur_result_path = result_output_prefix + "_" + std::to_string(L) + "_idx_uint32.bin";
-  //   pipeann::save_bin<_u32>(cur_result_path, query_result_ids[test_id].data(), query_num, recall_at);
+  //   pipeann::save_bin<uint32_t>(cur_result_path, query_result_ids[test_id].data(), query_num, recall_at);
 
   //   cur_result_path = result_output_prefix + "_" + std::to_string(L) + "_tags_uint32.bin";
-  //   pipeann::save_bin<_u32>(cur_result_path, query_result_tags[test_id].data(), query_num, recall_at);
+  //   pipeann::save_bin<uint32_t>(cur_result_path, query_result_tags[test_id].data(), query_num, recall_at);
   //   cur_result_path = result_output_prefix + "_" + std::to_string(L) + "_dists_float.bin";
   //   pipeann::save_bin<float>(cur_result_path, query_result_dists[test_id++].data(), query_num, recall_at);
   // }

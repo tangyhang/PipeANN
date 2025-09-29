@@ -11,14 +11,9 @@ int build_in_memory_index(const std::string &data_path, const std::string &tags_
                           const unsigned L, const float alpha, const std::string &save_path, const unsigned num_threads,
                           bool dynamic_index, bool single_file_index, pipeann::Metric distMetric) {
   pipeann::Parameters paras;
-  paras.Set<unsigned>("R", R);
-  paras.Set<unsigned>("L", L);
-  paras.Set<unsigned>("C", 750);  // maximum candidate set size during pruning procedure
-  paras.Set<float>("alpha", alpha);
-  paras.Set<bool>("saturate_graph", 0);
-  paras.Set<unsigned>("num_threads", num_threads);
+  paras.set(R, L, 750, alpha, num_threads, false);
 
-  _u64 data_num, data_dim;
+  uint64_t data_num, data_dim;
   pipeann::get_bin_metadata(data_path, data_num, data_dim);
   std::cout << "Building in-memory index with parameters: data_file: " << data_path << "tags file: " << tags_file
             << " R: " << R << " L: " << L << " alpha: " << alpha << " index_path: " << save_path
@@ -42,10 +37,10 @@ int build_in_memory_index(const std::string &data_path, const std::string &tags_
     std::ifstream reader;
     std::cout << "Opening bin file " << tags_file << "... " << std::endl;
     reader.open(tags_file, std::ios::binary);
-    reader.seekg(2 * sizeof(_u32), std::ios::beg);
-    _u32 tags_size = data_num * data_dim;
+    reader.seekg(2 * sizeof(uint32_t), std::ios::beg);
+    uint32_t tags_size = data_num * data_dim;
     std::vector<TagT> tags(data_num);
-    reader.read((char *) tags.data(), tags_size * sizeof(_u32));
+    reader.read((char *) tags.data(), tags_size * sizeof(uint32_t));
     reader.close();
     std::cout << "First tag is " << tags[0] << std::endl;
 

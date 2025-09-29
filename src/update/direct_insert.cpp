@@ -1,5 +1,5 @@
 #include "aligned_file_reader.h"
-#include "libcuckoo/cuckoohash_map.hh"
+#include "utils/libcuckoo/cuckoohash_map.hh"
 #include "ssd_index.h"
 #include <malloc.h>
 #include <algorithm>
@@ -11,10 +11,10 @@
 #include <cstdint>
 #include <limits>
 #include <tuple>
-#include "timer.h"
-#include "tsl/robin_map.h"
+#include "utils/timer.h"
+#include "utils/tsl/robin_map.h"
 #include "utils.h"
-#include "v2/page_cache.h"
+#include "utils/page_cache.h"
 
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -22,32 +22,27 @@
 
 namespace pipeann {
   template<typename T, typename TagT>
-  int SSDIndex<T, TagT>::insert_in_place(const T *point, const TagT &tag, tsl::robin_set<uint32_t> *deletion_set) {
-    QueryBuffer<T> *read_data = this->pop_query_buf(nullptr);
+  int SSDIndex<T, TagT>::insert_in_place(const T *point1, const TagT &tag, tsl::robin_set<uint32_t> *deletion_set) {
+    if (unlikely(size_per_io != SECTOR_LEN)) {
+      LOG(ERROR) << "Insert not supported for size_per_io == " << size_per_io;
+    }
+
+    QueryBuffer<T> *read_data = this->pop_query_buf(point1);
+    T *point = read_data->aligned_query_T;  // normalized point for cosine.
     void *ctx = reader->get_ctx();
 
     uint32_t target_id = cur_id++;
-    // write PQ.
 
-    std::vector<uint8_t> pq_coords = deflate_vector(point);
-    uint64_t pq_offset = target_id * n_chunks;
-    {
-      static std::mutex pq_mu;
-      std::lock_guard<std::mutex> lock(pq_mu);
-      if (this->data.size() < pq_offset + n_chunks) {
-        while (this->data.size() < pq_offset + n_chunks) {
-          this->data.resize(1.5 * this->data.size());
-        }
-      }
-      memcpy(this->data.data() + pq_offset, pq_coords.data(), n_chunks);
-    }
+    // write neighbor (e.g., PQ).
+    nbr_handler->insert(point, target_id);
 
     std::vector<Neighbor> exp_node_info;
     tsl::robin_map<uint32_t, T *> coord_map;
     coord_map.reserve(2 * this->l_index);
 
     std::vector<uint64_t> page_ref{};
-    this->do_beam_search(point, 0, l_index, beam_width, exp_node_info, &coord_map, nullptr, deletion_set, false,
+    // re-normalize point1 to support inner_product search (it adds one more dimension, so not idempotent).
+    this->do_beam_search(point1, 0, l_index, beam_width, exp_node_info, &coord_map, nullptr, deletion_set, false,
                          &page_ref);
     std::vector<uint32_t> new_nhood;
     prune_neighbors(coord_map, exp_node_info, new_nhood);
@@ -123,11 +118,7 @@ namespace pipeann {
     }
     writes_4k.pop_back();
 
-#ifdef DIRECT_READ_CC
-    reader->read(reads, ctx);
-#else
     reader->read_alloc(reads, ctx, &page_ref);
-#endif
 
     // update the target node.
     auto sector = loc_sector_no(locs[new_nhood.size()]);
@@ -152,12 +143,11 @@ namespace pipeann {
       nhood.assign(r_nbr_node.nbrs, r_nbr_node.nbrs + r_nbr_node.nnbrs);
       nhood.emplace_back(target_id);  // attention: we do not reuse IDs.
 
-      if (nhood.size() > this->range) {  // prune neighbors
-#ifdef DELTA_PRUNING
-        auto &thread_pq_buf = read_data->aligned_pq_coord_scratch;
+      if (nhood.size() > this->range) {  // delta prune neighbors
+        auto &thread_pq_buf = read_data->nbr_vec_scratch;
         std::vector<float> tgt_dists(nhood.size(), 0.0f), nbr_dists(nhood.size(), 0.0f);
-        compute_pq_dists(target_id, nhood.data(), tgt_dists.data(), (_u32) nhood.size(), thread_pq_buf);
-        compute_pq_dists(r_nbr_node.id, nhood.data(), nbr_dists.data(), (_u32) nhood.size(), thread_pq_buf);
+        nbr_handler->compute_dists(target_id, nhood.data(), nhood.size(), tgt_dists.data(), thread_pq_buf);
+        nbr_handler->compute_dists(r_nbr_node.id, nhood.data(), nhood.size(), nbr_dists.data(), thread_pq_buf);
         std::vector<TriangleNeighbor> tri_pool(nhood.size());
 
         for (uint32_t k = 0; k < nhood.size(); k++) {
@@ -179,26 +169,13 @@ namespace pipeann {
           exit(-1);
         }
         this->delta_prune_neighbors_pq(tri_pool, nhood, thread_pq_buf, tgt_idx);
-#else
-        std::vector<float> dists(nhood.size(), 0.0f);
-        std::vector<Neighbor> pool(nhood.size());
-        auto &thread_pq_buf = read_data->aligned_pq_coord_scratch;
-        compute_pq_dists(r_nbr_node.id, nhood.data(), dists.data(), (_u32) nhood.size(), thread_pq_buf);
-        for (uint32_t k = 0; k < nhood.size(); k++) {
-          pool[k].id = nhood[k];
-          pool[k].distance = dists[k];
-        }
-        nhood.clear();
-        std::sort(pool.begin(), pool.end());
-        this->prune_neighbors_pq(pool, nhood, thread_pq_buf);
-#endif
       }
 
       auto w_sector = loc_sector_no(locs[i]);
       auto w_node_buf = offset_to_loc(page_buf_map[w_sector], locs[i]);
       DiskNode<T> w_nbr_node(new_nhood[i], offset_to_node_coords(w_node_buf), offset_to_node_nhood(w_node_buf));
-      w_nbr_node.nnbrs = (_u32) nhood.size();
-      *(w_nbr_node.nbrs - 1) = (_u32) nhood.size();  // write to buf
+      w_nbr_node.nnbrs = (uint32_t) nhood.size();
+      *(w_nbr_node.nbrs - 1) = (uint32_t) nhood.size();  // write to buf
       memcpy(w_nbr_node.coords, r_nbr_node.coords, data_dim * sizeof(T));
       memcpy(w_nbr_node.nbrs, nhood.data(), w_nbr_node.nnbrs * sizeof(uint32_t));
     }
@@ -232,12 +209,11 @@ namespace pipeann {
     // commit writes (in the background thread.)
 #ifdef BG_IO_THREAD
     if (!page_ref.empty()) {
-      auto bg_task = new BgTask{
-          .thread_data = read_data,
-          .writes = std::move(writes),
-          .pages_to_unlock = std::move(pages_locked),
-          .pages_to_deref = std::move(write_page_ref),
-      };
+      auto bg_task = new BgTask{.thread_data = read_data,
+                                .writes = std::move(writes),
+                                .pages_to_unlock = std::move(pages_locked),
+                                .pages_to_deref = std::move(write_page_ref),
+                                .terminate = false};
       bg_tasks.push(bg_task);
       bg_tasks.push_notify_all();
     } else {
@@ -270,6 +246,11 @@ namespace pipeann {
         task = bg_tasks.pop();
       }
 
+      if (unlikely(task->terminate)) {
+        delete task;
+        break;
+      }
+
       reader->write(task->writes, ctx);
       v2::unlockReqs(this->page_lock_table, task->pages_to_unlock);
       reader->deref(&task->pages_to_deref, ctx);
@@ -287,6 +268,6 @@ namespace pipeann {
   }
 
   template class SSDIndex<float>;
-  template class SSDIndex<_s8>;
-  template class SSDIndex<_u8>;
+  template class SSDIndex<int8_t>;
+  template class SSDIndex<uint8_t>;
 }  // namespace pipeann

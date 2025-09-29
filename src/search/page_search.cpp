@@ -1,5 +1,5 @@
 #include "aligned_file_reader.h"
-#include "libcuckoo/cuckoohash_map.hh"
+#include "utils/libcuckoo/cuckoohash_map.hh"
 #include "ssd_index.h"
 #include <malloc.h>
 #include <algorithm>
@@ -11,98 +11,21 @@
 #include <cstdint>
 #include <limits>
 #include <tuple>
-#include "timer.h"
-#include "tsl/robin_map.h"
-#include "tsl/robin_set.h"
+#include "utils/timer.h"
+#include "utils/tsl/robin_map.h"
+#include "utils/tsl/robin_set.h"
 #include "utils.h"
-#include "v2/page_cache.h"
+#include "utils/page_cache.h"
 
 #include <unistd.h>
 #include <sys/syscall.h>
 #include "linux_aligned_file_reader.h"
 
 namespace pipeann {
-
   template<typename T, typename TagT>
-  void SSDIndex<T, TagT>::load_page_layout(const std::string &index_prefix, const _u64 nnodes_per_sector,
-                                           const _u64 num_points) {
-    std::string partition_file = index_prefix + "_partition.bin.aligned";
-    if (std::filesystem::exists(partition_file)) {
-      LOG(INFO) << "Loading partition file " << partition_file;
-      std::ifstream part(partition_file);
-      _u64 C, partition_nums, nd;
-      part.read((char *) &C, sizeof(_u64));
-      part.read((char *) &partition_nums, sizeof(_u64));
-      part.read((char *) &nd, sizeof(_u64));
-      if (nnodes_per_sector && num_points && (C != nnodes_per_sector)) {
-        LOG(ERROR) << "partition information not correct.";
-        exit(-1);
-      }
-      LOG(INFO) << "Partition meta: C: " << C << " partition_nums: " << partition_nums;
-
-      uint64_t page_offset = loc_sector_no(0);
-      auto st = std::chrono::high_resolution_clock::now();
-
-      constexpr uint64_t n_parts_per_read = 1024 * 1024;
-      std::vector<unsigned> part_buf(n_parts_per_read * (1 + nnodes_per_sector));
-      for (uint64_t p = 0; p < partition_nums; p += n_parts_per_read) {
-        uint64_t nxt_p = std::min(p + n_parts_per_read, partition_nums);
-        part.read((char *) part_buf.data(), sizeof(unsigned) * n_parts_per_read * (1 + nnodes_per_sector));
-#pragma omp parallel for schedule(dynamic)
-        for (uint64_t i = p; i < nxt_p; ++i) {
-          uint32_t s = part_buf[(i - p) * (1 + nnodes_per_sector)];
-          PageArr tmp_arr;
-          memcpy(tmp_arr.data(), part_buf.data() + (i - p) * (1 + nnodes_per_sector) + 1,
-                 sizeof(unsigned) * nnodes_per_sector);
-          for (uint32_t j = 0; j < s; ++j) {
-            uint64_t loc = i * nnodes_per_sector + j;
-            id2loc_.insert_or_assign(tmp_arr[j], loc);
-          }
-          this->page_layout.insert(page_offset + i, tmp_arr);
-        }
-      }
-      this->cur_loc = partition_nums * nnodes_per_sector;  // aligned.
-
-      auto et = std::chrono::high_resolution_clock::now();
-      LOG(INFO) << "Page layout loaded in " << std::chrono::duration_cast<std::chrono::milliseconds>(et - st).count()
-                << " ms";
-    } else {
-      LOG(INFO) << partition_file << " does not exist, use equal partition mapping";
-// use equal mapping for id2loc and page_layout.
-#ifndef NO_MAPPING
-#pragma omp parallel for
-      for (size_t i = 0; i < this->num_points; ++i) {
-        id2loc_.insert_or_assign(i, i);
-      }
-
-      uint64_t page_offset = loc_sector_no(0);
-      uint64_t num_sectors = (num_points + nnodes_per_sector - 1) / nnodes_per_sector;
-#pragma omp parallel for
-      for (size_t i = 0; i < num_sectors; ++i) {
-        PageArr tmp_arr;
-        for (uint32_t j = 0; j < nnodes_per_sector; ++j) {
-          uint64_t id = i * nnodes_per_sector + j;
-          tmp_arr[j] = id < num_points ? id : kInvalidID;  // fill with kInvalidID if out of bounds.
-        }
-        for (uint32_t j = nnodes_per_sector; j < tmp_arr.size(); ++j) {
-          tmp_arr[j] = kInvalidID;
-        }
-        this->page_layout.insert(i + page_offset, tmp_arr);
-      }
-      this->cur_loc = num_points;
-      // aligned.
-      if (num_points % nnodes_per_sector != 0) {
-        cur_loc += nnodes_per_sector - (num_points % nnodes_per_sector);
-      }
-#endif
-    }
-    LOG(INFO) << "Cur location: " << this->cur_loc;
-    LOG(INFO) << "Page layout loaded.";
-  }
-
-  template<typename T, typename TagT>
-  size_t SSDIndex<T, TagT>::page_search(const T *query1, const _u64 k_search, const _u32 mem_L, const _u64 l_search,
-                                        TagT *res_tags, float *distances, const _u64 beam_width, QueryStats *stats) {
+  size_t SSDIndex<T, TagT>::page_search(const T *query1, const uint64_t k_search, const uint32_t mem_L,
+                                        const uint64_t l_search, TagT *res_tags, float *distances,
+                                        const uint64_t beam_width, QueryStats *stats) {
     QueryBuffer<T> *query_buf = pop_query_buf(query1);
     void *ctx = reader->get_ctx();
 
@@ -121,32 +44,20 @@ namespace pipeann {
 
     // sector scratch
     char *sector_scratch = query_buf->sector_scratch;
-    _u64 &sector_scratch_idx = query_buf->sector_idx;
+    uint64_t &sector_scratch_idx = query_buf->sector_idx;
 
     // query <-> PQ chunk centers distances
-    float *pq_dists = query_buf->aligned_pqtable_dist_scratch;
-    pq_table.populate_chunk_distances(query, pq_dists);
-
-    // query <-> neighbor list
+    nbr_handler->initialize_query(query, query_buf);
     float *dist_scratch = query_buf->aligned_dist_scratch;
-    _u8 *pq_coord_scratch = query_buf->aligned_pq_coord_scratch;
 
     Timer query_timer, io_timer, cpu_timer;
     std::vector<Neighbor> retset(4096);
-    tsl::robin_set<_u64> &visited = *(query_buf->visited);
+    tsl::robin_set<uint64_t> &visited = *(query_buf->visited);
     tsl::robin_set<unsigned> &page_visited = *(query_buf->page_visited);
     unsigned cur_list_size = 0;
 
     std::vector<Neighbor> full_retset;
     full_retset.reserve(4096);
-    _u32 best_medoid = 0;
-
-    // lambda to batch compute query<-> node distances in PQ space
-    auto compute_pq_dists = [this, pq_coord_scratch, pq_dists](const unsigned *ids, const _u64 n_ids,
-                                                               float *dists_out) {
-      ::aggregate_coords(ids, n_ids, this->data.data(), this->n_chunks, pq_coord_scratch);
-      ::pq_dist_lookup(pq_coord_scratch, n_ids, this->n_chunks, pq_dists, dists_out);
-    };
 
     auto compute_exact_dists_and_push = [&](const char *node_buf, const unsigned id) -> float {
       T *node_fp_coords_copy = data_buf;
@@ -167,10 +78,10 @@ namespace pipeann {
         }
       }
       if (nbors_cand_size) {
-        compute_pq_dists(node_nbrs, nbors_cand_size, dist_scratch);
+        nbr_handler->compute_dists(query_buf, node_nbrs, nbors_cand_size);
         for (unsigned m = 0; m < nbors_cand_size; ++m) {
           const int nbor_id = node_nbrs[m];
-          const float nbor_dist = dist_scratch[m];
+          const float nbor_dist = query_buf->aligned_dist_scratch[m];
           if (stats != nullptr) {
             stats->n_cmps++;
           }
@@ -189,11 +100,11 @@ namespace pipeann {
       }
     };
 
-    auto compute_and_add_to_retset = [&](const unsigned *node_ids, const _u64 n_ids) {
-      compute_pq_dists(node_ids, n_ids, dist_scratch);
-      for (_u64 i = 0; i < n_ids; ++i) {
+    auto compute_and_add_to_retset = [&](const unsigned *node_ids, const uint64_t n_ids) {
+      nbr_handler->compute_dists(query_buf, node_ids, n_ids);
+      for (uint64_t i = 0; i < n_ids; ++i) {
         retset[cur_list_size].id = node_ids[i];
-        retset[cur_list_size].distance = dist_scratch[i];
+        retset[cur_list_size].distance = query_buf->aligned_dist_scratch[i];
         retset[cur_list_size++].flag = true;
         visited.insert(node_ids[i]);
       }
@@ -209,7 +120,7 @@ namespace pipeann {
       mem_index_->search_with_tags(query, mem_L, mem_L, mem_tags.data(), mem_dists.data());
       compute_and_add_to_retset(mem_tags.data(), std::min((unsigned) mem_L, (unsigned) l_search));
     } else {
-      compute_and_add_to_retset(&best_medoid, 1);
+      compute_and_add_to_retset(&medoid, 1);
     }
 
     std::sort(retset.begin(), retset.begin() + cur_list_size);
@@ -241,8 +152,8 @@ namespace pipeann {
       frontier_read_reqs.clear();
       sector_scratch_idx = 0;
       // find new beam
-      _u32 marker = k;
-      _u32 num_seen = 0;
+      uint32_t marker = k;
+      uint32_t num_seen = 0;
 
       // distribute cache and disk-read nodes
       // 100 us
@@ -268,7 +179,7 @@ namespace pipeann {
         locked = this->lock_idx(idx_lock_table, kInvalidID, frontier, true);
         page_locked = this->lock_page_idx(page_idx_lock_table, kInvalidID, frontier, true);
 
-        for (_u64 i = 0; i < frontier.size(); i++) {
+        for (uint64_t i = 0; i < frontier.size(); i++) {
           auto id = frontier[i];
           uint64_t page_id = id2page(id);
           auto buf = sector_scratch + sector_scratch_idx * size_per_io;
@@ -370,8 +281,8 @@ namespace pipeann {
               [](const Neighbor &left, const Neighbor &right) { return left < right; });
 
     // copy k_search values
-    _u64 t = 0;
-    for (_u64 i = 0; i < full_retset.size() && t < k_search; i++) {
+    uint64_t t = 0;
+    for (uint64_t i = 0; i < full_retset.size() && t < k_search; i++) {
       if (i > 0 && full_retset[i].id == full_retset[i - 1].id) {
         continue;
       }
@@ -391,6 +302,6 @@ namespace pipeann {
   }
 
   template class SSDIndex<float>;
-  template class SSDIndex<_s8>;
-  template class SSDIndex<_u8>;
+  template class SSDIndex<int8_t>;
+  template class SSDIndex<uint8_t>;
 }  // namespace pipeann

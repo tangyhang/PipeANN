@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <boost/dynamic_bitset.hpp>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -10,11 +9,11 @@
 #include <limits>
 #include <thread>
 #include <omp.h>
-#include <random>
 #include <shared_mutex>
 #include <sstream>
 #include <string>
-#include "tsl/robin_set.h"
+#include "utils/percentile_stats.h"
+#include "utils/tsl/robin_set.h"
 #include <unordered_map>
 
 #include <fcntl.h>
@@ -22,11 +21,10 @@
 #include <time.h>
 
 #include "index.h"
-#include "parameters.h"
-#include "timer.h"
+#include "utils/timer.h"
 #include "utils.h"
-#include "query_buf.h"
-#include "v2/lock_table.h"
+#include "ssd_index_defs.h"
+#include "utils/lock_table.h"
 
 // only L2 implemented. Need to implement inner product search
 
@@ -94,14 +92,14 @@ namespace pipeann {
   }
 
   template<typename T, typename TagT>
-  _u64 Index<T, TagT>::save_tags(std::string tags_file, size_t offset) {
+  uint64_t Index<T, TagT>::save_tags(std::string tags_file, size_t offset, bool frozen) {
     if (!_enable_tags) {
       LOG(INFO) << "Not saving tags as they are not enabled.";
       return 0;
     }
     size_t tag_bytes_written;
     TagT *tag_data = new TagT[_nd + _num_frozen_pts];
-    for (_u32 i = 0; i < _nd; i++) {
+    for (uint32_t i = 0; i < _nd; i++) {
       if (_location_to_tag.find(i) != _location_to_tag.end()) {
         tag_data[i] = _location_to_tag[i];
       } else {
@@ -112,57 +110,59 @@ namespace pipeann {
     if (_num_frozen_pts > 0) {
       std::memset((char *) &tag_data[_ep], 0, sizeof(TagT));
     }
-    tag_bytes_written = save_bin<TagT>(tags_file, tag_data, _nd + _num_frozen_pts, 1, offset);
+    size_t n = frozen ? (_nd + _num_frozen_pts) : _nd;
+    tag_bytes_written = save_bin<TagT>(tags_file, tag_data, n, 1, offset);
     delete[] tag_data;
     return tag_bytes_written;
   }
 
   template<typename T, typename TagT>
-  _u64 Index<T, TagT>::save_data(std::string data_file, size_t offset) {
-    return save_data_in_base_dimensions(data_file, _data, _nd + _num_frozen_pts, _dim, _aligned_dim, offset);
+  uint64_t Index<T, TagT>::save_data(std::string data_file, size_t offset, bool frozen) {
+    size_t n = (frozen ? (_nd + _num_frozen_pts) : _nd);
+    return save_data_in_base_dimensions(data_file, _data, n, _dim, _aligned_dim, offset);
   }
 
   // save the graph index on a file as an adjacency list. For each point,
   // first store the number of neighbors, and then the neighbor list (each as
   // 4 byte unsigned)
   template<typename T, typename TagT>
-  _u64 Index<T, TagT>::save_graph(std::string graph_file, size_t offset) {
+  uint64_t Index<T, TagT>::save_graph(std::string graph_file, size_t offset) {
     std::ofstream out;
     open_file_to_write(out, graph_file);
 
     out.seekp(offset, out.beg);
-    _u64 index_size = 24;
-    _u32 max_degree = 0;
+    uint64_t index_size = 24;
+    uint32_t max_degree = 0;
     out.write((char *) &index_size, sizeof(uint64_t));
     out.write((char *) &_width, sizeof(unsigned));
     unsigned ep_u32 = _ep;
     out.write((char *) &ep_u32, sizeof(unsigned));
-    out.write((char *) &_num_frozen_pts, sizeof(_u64));
+    out.write((char *) &_num_frozen_pts, sizeof(uint64_t));
     for (unsigned i = 0; i < _nd + _num_frozen_pts; i++) {
       unsigned GK = (unsigned) _final_graph[i].size();
       out.write((char *) &GK, sizeof(unsigned));
       out.write((char *) _final_graph[i].data(), GK * sizeof(unsigned));
-      max_degree = _final_graph[i].size() > max_degree ? (_u32) _final_graph[i].size() : max_degree;
-      index_size += (_u64) (sizeof(unsigned) * (GK + 1));
+      max_degree = _final_graph[i].size() > max_degree ? (uint32_t) _final_graph[i].size() : max_degree;
+      index_size += (uint64_t) (sizeof(unsigned) * (GK + 1));
     }
     out.seekp(offset, out.beg);
     out.write((char *) &index_size, sizeof(uint64_t));
-    out.write((char *) &max_degree, sizeof(_u32));
+    out.write((char *) &max_degree, sizeof(uint32_t));
     out.close();
     return index_size;  // number of bytes written
   }
 
   template<typename T, typename TagT>
-  _u64 Index<T, TagT>::save_delete_list(const std::string &filename, _u64 file_offset) {
+  uint64_t Index<T, TagT>::save_delete_list(const std::string &filename, uint64_t file_offset) {
     if (_delete_set.size() == 0) {
       return 0;
     }
-    std::unique_ptr<_u32[]> delete_list = std::make_unique<_u32[]>(_delete_set.size());
-    _u32 i = 0;
+    std::unique_ptr<uint32_t[]> delete_list = std::make_unique<uint32_t[]>(_delete_set.size());
+    uint32_t i = 0;
     for (auto &del : _delete_set) {
       delete_list[i++] = del;
     }
-    return save_bin<_u32>(filename, delete_list.get(), _delete_set.size(), 1, file_offset);
+    return save_bin<uint32_t>(filename, delete_list.get(), _delete_set.size(), 1, file_offset);
   }
 
   template<typename T, typename TagT>
@@ -200,7 +200,7 @@ namespace pipeann {
       cumul_bytes[2] = cumul_bytes[1] + save_data(std::string(filename), cumul_bytes[1]);
       cumul_bytes[3] = cumul_bytes[2] + save_tags(std::string(filename), cumul_bytes[2]);
       cumul_bytes[4] = cumul_bytes[3] + save_delete_list(filename, cumul_bytes[3]);
-      pipeann::save_bin<_u64>(filename, cumul_bytes.data(), cumul_bytes.size(), 1, 0);
+      pipeann::save_bin<uint64_t>(filename, cumul_bytes.data(), cumul_bytes.size(), 1, 0);
 
       LOG(INFO) << "Saved index as one file to " << filename << " of size " << cumul_bytes[cumul_bytes.size() - 1]
                 << "B.";
@@ -237,11 +237,11 @@ namespace pipeann {
     }
 
     size_t num_data_points = _num_frozen_pts > 0 ? file_num_points - 1 : file_num_points;
-    for (_u32 i = 0; i < (_u32) num_data_points; i++) {
+    for (uint32_t i = 0; i < (uint32_t) num_data_points; i++) {
       TagT tag = *(tag_data + i);
       if (_delete_set.find(i) == _delete_set.end()) {
         _location_to_tag[i] = tag;
-        _tag_to_location[tag] = (_u32) i;
+        _tag_to_location[tag] = (uint32_t) i;
       }
     }
     LOG(INFO) << "Tags loaded.";
@@ -284,9 +284,9 @@ namespace pipeann {
 
   template<typename T, typename TagT>
   size_t Index<T, TagT>::load_delete_set(const std::string &filename, size_t offset) {
-    std::unique_ptr<_u32[]> delete_list;
-    _u64 npts, ndim;
-    load_bin<_u32>(filename, delete_list, npts, ndim, offset);
+    std::unique_ptr<uint32_t[]> delete_list;
+    uint64_t npts, ndim;
+    load_bin<uint32_t>(filename, delete_list, npts, ndim, offset);
     assert(ndim == 1);
     for (size_t i = 0; i < npts; i++) {
       _delete_set.insert(delete_list[i]);
@@ -317,12 +317,12 @@ namespace pipeann {
       graph_num_pts = load_graph(graph_file, data_file_num_pts);
 
     } else {
-      _u64 nr, nc;
-      std::unique_ptr<_u64[]> file_offset_data;
+      uint64_t nr, nc;
+      std::unique_ptr<uint64_t[]> file_offset_data;
 
       std::string index_file(filename);
 
-      pipeann::load_bin<_u64>(index_file, file_offset_data, nr, nc, 0);
+      pipeann::load_bin<uint64_t>(index_file, file_offset_data, nr, nc, 0);
       // Loading data first so that we know how many points to expect.
       data_file_num_pts = load_data(index_file, file_offset_data[1]);
       graph_num_pts = load_graph(index_file, data_file_num_pts, file_offset_data[0]);
@@ -344,7 +344,7 @@ namespace pipeann {
 
     _nd = data_file_num_pts - _num_frozen_pts;
     _empty_slots.clear();
-    for (_u32 i = _nd; i < _max_points; i++) {
+    for (uint32_t i = _nd; i < _max_points; i++) {
       _empty_slots.insert(i);
     }
 
@@ -362,18 +362,18 @@ namespace pipeann {
   void Index<T, TagT>::load_from_disk_index(const std::string &filename) {
     // only load V and E.
     std::ifstream in(filename + "_disk.index", std::ios::binary);
-    _u32 nr, nc;
-    _u64 disk_nnodes, disk_ndims, medoid_id_on_file, max_node_len, nnodes_per_sector;
+    uint32_t nr, nc;
+    uint64_t disk_nnodes, disk_ndims, medoid_id_on_file, max_node_len, nnodes_per_sector;
 
-    in.read((char *) &nr, sizeof(_u32));
-    in.read((char *) &nc, sizeof(_u32));
+    in.read((char *) &nr, sizeof(uint32_t));
+    in.read((char *) &nc, sizeof(uint32_t));
 
-    in.read((char *) &disk_nnodes, sizeof(_u64));
-    in.read((char *) &disk_ndims, sizeof(_u64));
+    in.read((char *) &disk_nnodes, sizeof(uint64_t));
+    in.read((char *) &disk_ndims, sizeof(uint64_t));
 
-    in.read((char *) &medoid_id_on_file, sizeof(_u64));
-    in.read((char *) &max_node_len, sizeof(_u64));
-    in.read((char *) &nnodes_per_sector, sizeof(_u64));
+    in.read((char *) &medoid_id_on_file, sizeof(uint64_t));
+    in.read((char *) &max_node_len, sizeof(uint64_t));
+    in.read((char *) &nnodes_per_sector, sizeof(uint64_t));
 
     LOG(INFO) << "Loading disk index from " << filename << "_disk.index";
     LOG(INFO) << "Disk index has " << disk_nnodes << " nodes and " << disk_ndims << " dimensions.";
@@ -381,7 +381,7 @@ namespace pipeann {
               << " Nodes per sector: " << nnodes_per_sector;
 
     _ep = medoid_id_on_file;
-    _u64 data_dim = disk_ndims;
+    uint64_t data_dim = disk_ndims;
     range = ((max_node_len - data_dim * sizeof(T)) / sizeof(unsigned)) - 1;
 
     constexpr int kSectorsPerRead = 65536;
@@ -406,7 +406,7 @@ namespace pipeann {
         }
 
         auto page_rbuf = buf + (loc / nnodes_per_sector - st_sector) * kSectorLen;
-        auto node_rbuf = page_rbuf + (nnodes_per_sector == 0 ? 0 : ((_u64) loc % nnodes_per_sector) * max_node_len);
+        auto node_rbuf = page_rbuf + (nnodes_per_sector == 0 ? 0 : ((uint64_t) loc % nnodes_per_sector) * max_node_len);
         DiskNode<T> node(id, (T *) node_rbuf, (unsigned *) (node_rbuf + data_dim * sizeof(T)));
 
         // load data and nhood.
@@ -422,7 +422,7 @@ namespace pipeann {
     disk_npts = disk_nnodes;
     _nd = disk_nnodes - _num_frozen_pts;
     _empty_slots.clear();
-    for (_u32 i = _nd; i < _max_points; i++) {
+    for (uint32_t i = _nd; i < _max_points; i++) {
       _empty_slots.insert(i);
     }
     reposition_frozen_point_to_end();
@@ -433,11 +433,11 @@ namespace pipeann {
     std::ifstream in(filename, std::ios::binary);
     in.seekg(offset, in.beg);
     size_t expected_file_size;
-    _u64 file_frozen_pts;
-    in.read((char *) &expected_file_size, sizeof(_u64));
+    uint64_t file_frozen_pts;
+    in.read((char *) &expected_file_size, sizeof(uint64_t));
     in.read((char *) &_width, sizeof(unsigned));
     in.read((char *) &_ep, sizeof(unsigned));
-    in.read((char *) &file_frozen_pts, sizeof(_u64));
+    in.read((char *) &file_frozen_pts, sizeof(uint64_t));
 
     if (file_frozen_pts != _num_frozen_pts) {
       if (file_frozen_pts == 1) {
@@ -481,7 +481,7 @@ namespace pipeann {
       tmp.reserve(k);
       in.read((char *) tmp.data(), k * sizeof(unsigned));
       _final_graph[nodes - 1].swap(tmp);
-      bytes_read += sizeof(uint32_t) * ((_u64) k + 1);
+      bytes_read += sizeof(uint32_t) * ((uint64_t) k + 1);
       if (nodes % 10000000 == 0)
         LOG(INFO) << ".";
     }
@@ -540,7 +540,7 @@ namespace pipeann {
     AtomicDistance atomic_dists[kDistNum];
 
 #pragma omp parallel for schedule(static, 65536)
-    for (_s64 i = 0; i < (_s64) _nd; i++) {
+    for (int64_t i = 0; i < (int64_t) _nd; i++) {
       // extract point and distance reference
       float dist = 0;
       const T *cur_vec = _data + (i * (size_t) _aligned_dim);
@@ -578,7 +578,11 @@ namespace pipeann {
                                                                        std::vector<Neighbor> &expanded_nodes_info,
                                                                        tsl::robin_set<unsigned> &expanded_nodes_ids,
                                                                        std::vector<Neighbor> &best_L_nodes,
-                                                                       bool ret_frozen) {
+                                                                       bool ret_frozen, QueryStats *stats) {
+    struct alignas(64) DistBuffer {
+      T buf[1024];
+    } dist_buf_aligned;
+
     best_L_nodes.resize(Lsize + 1);
     for (unsigned i = 0; i < Lsize + 1; i++) {
       best_L_nodes[i].distance = std::numeric_limits<float>::max();
@@ -603,6 +607,8 @@ namespace pipeann {
         break;
     }
 
+    Timer query_timer, io_timer, cpu_timer;
+
     /* sort best_L_nodes based on distance of each point to node_coords */
     std::sort(best_L_nodes.begin(), best_L_nodes.begin() + l);
     unsigned k = 0;
@@ -613,6 +619,7 @@ namespace pipeann {
       unsigned nk = l;
 
       if (best_L_nodes[k].flag) {
+        io_timer.reset();
         best_L_nodes[k].flag = false;
         auto n = best_L_nodes[k].id;
         if (!(best_L_nodes[k].id == _ep && _num_frozen_pts > 0 && !ret_frozen)) {
@@ -632,18 +639,31 @@ namespace pipeann {
             des.emplace_back(_final_graph[n][m]);
           }
         }
+        if (stats != nullptr) {
+          stats->io_us += io_timer.elapsed();  // read vec
+        }
+
+        cpu_timer.reset();
 
         for (unsigned m = 0; m < des.size(); ++m) {
           unsigned id = des[m];
           if (inserted_into_pool.find(id) == inserted_into_pool.end()) {
             inserted_into_pool.insert(id);
 
+            // io_timer.reset();
             if ((m + 1) < des.size()) {
               auto nextn = des[m + 1];
               pipeann::prefetch_vector((const char *) _data + _aligned_dim * (size_t) nextn, sizeof(T) * _aligned_dim);
             }
-
             cmps++;
+            // memcpy((void *) dist_buf_aligned.buf, (const void *) (_data + _aligned_dim * (size_t) id),
+            //        sizeof(T) * _aligned_dim);
+            // if (stats != nullptr) {
+            //   stats->io_us1 += io_timer.elapsed();  // read nbrs
+            // }
+
+            // float dist = _distance->compare(node_coords, dist_buf_aligned.buf, (unsigned) _aligned_dim);
+
             float dist = _distance->compare(node_coords, _data + _aligned_dim * (size_t) id, (unsigned) _aligned_dim);
 
             if (dist >= best_L_nodes[l - 1].distance && (l == Lsize))
@@ -656,6 +676,9 @@ namespace pipeann {
             if (r < nk)
               nk = r;
           }
+        }
+        if (stats != nullptr) {
+          stats->cpu_us += cpu_timer.elapsed();  // compute + read nbr
         }
 
         if (nk <= k)
@@ -700,7 +723,7 @@ namespace pipeann {
   template<typename T, typename TagT>
   void Index<T, TagT>::occlude_list(std::vector<Neighbor> &pool, const float alpha, const unsigned degree,
                                     const unsigned maxc, std::vector<Neighbor> &result) {
-    auto pool_size = (_u32) pool.size();
+    auto pool_size = (uint32_t) pool.size();
     std::vector<float> occlude_factor(pool_size, 0);
     occlude_list(pool, alpha, degree, maxc, result, occlude_factor);
   }
@@ -742,9 +765,9 @@ namespace pipeann {
   template<typename T, typename TagT>
   void Index<T, TagT>::prune_neighbors(const unsigned location, std::vector<Neighbor> &pool,
                                        const Parameters &parameter, std::vector<unsigned> &pruned_list) {
-    unsigned range = parameter.Get<unsigned>("R");
-    unsigned maxc = parameter.Get<unsigned>("C");
-    float alpha = parameter.Get<float>("alpha");
+    unsigned range = parameter.R;
+    unsigned maxc = parameter.C;
+    float alpha = parameter.alpha;
 
     if (pool.size() == 0) {
       crash();
@@ -786,7 +809,7 @@ namespace pipeann {
    */
   template<typename T, typename TagT>
   void Index<T, TagT>::inter_insert(unsigned n, std::vector<unsigned> &pruned_list, const Parameters &parameter) {
-    const auto range = parameter.Get<unsigned>("R");
+    const auto range = parameter.R;
     assert(n >= 0 && n < _nd + _num_frozen_pts);
 
     const auto &src_pool = pruned_list;
@@ -804,7 +827,7 @@ namespace pipeann {
         // v2::SparseWriteLockGuard<uint64_t> guard(&_locks, des);
         v2::LockGuard guard(_locks->wrlock(des));
         if (std::find(des_pool.begin(), des_pool.end(), n) == des_pool.end()) {
-          if (des_pool.size() < (_u64) (SLACK_FACTOR * range)) {
+          if (des_pool.size() < (uint64_t) (SLACK_FACTOR * range)) {
             des_pool.emplace_back(n);
             prune_needed = false;
           } else {
@@ -845,14 +868,14 @@ namespace pipeann {
   // one-pass graph building.
   template<typename T, typename TagT>
   void Index<T, TagT>::link(Parameters &parameters) {
-    unsigned num_threads = parameters.Get<unsigned>("num_threads");
-    _saturate_graph = parameters.Get<bool>("saturate_graph");
-    unsigned L = parameters.Get<unsigned>("L");  // Search list size
-    const unsigned range = parameters.Get<unsigned>("R");
+    unsigned num_threads = parameters.num_threads;
+    _saturate_graph = parameters.saturate_graph;
+    unsigned L = parameters.L;  // Search list size
+    const unsigned range = parameters.R;
 
     LOG(INFO) << "Parameters: " << "L: " << L << ", R: " << range
               << ", saturate_graph: " << (_saturate_graph ? "true" : "false") << ", num_threads: " << num_threads
-              << ", alpha: " << parameters.Get<float>("alpha");
+              << ", alpha: " << parameters.alpha;
     if (num_threads != 0)
       omp_set_num_threads(num_threads);
 
@@ -900,7 +923,7 @@ namespace pipeann {
       LOG(INFO) << "Starting final cleanup..";
     }
 #pragma omp parallel for schedule(dynamic, 65536)
-    for (_s64 node_ctr = 0; node_ctr < n_vecs_to_visit; node_ctr++) {
+    for (int64_t node_ctr = 0; node_ctr < n_vecs_to_visit; node_ctr++) {
       auto node = node_ctr;
       if (_final_graph[node].size() > range) {
         tsl::robin_set<unsigned> dummy_visited(0);
@@ -1111,7 +1134,7 @@ namespace pipeann {
 
   template<typename T, typename TagT>
   std::pair<uint32_t, uint32_t> Index<T, TagT>::search(const T *query, const size_t K, const unsigned L,
-                                                       unsigned *indices, float *distances) {
+                                                       unsigned *indices, float *distances, QueryStats *stats) {
     std::vector<unsigned> init_ids;
     tsl::robin_set<unsigned> visited(10 * L);
     std::vector<Neighbor> best_L_nodes, expanded_nodes_info;
@@ -1127,8 +1150,8 @@ namespace pipeann {
     alloc_aligned(((void **) &aligned_query), allocSize, 8 * sizeof(T));
     memset(aligned_query, 0, _aligned_dim * sizeof(T));
     memcpy(aligned_query, query, _dim * sizeof(T));
-    auto retval =
-        iterate_to_fixed_point(aligned_query, L, init_ids, expanded_nodes_info, expanded_nodes_ids, best_L_nodes);
+    auto retval = iterate_to_fixed_point(aligned_query, L, init_ids, expanded_nodes_info, expanded_nodes_ids,
+                                         best_L_nodes, true, stats);
 
     size_t pos = 0;
     for (auto it : best_L_nodes) {
@@ -1181,7 +1204,7 @@ namespace pipeann {
   template<typename T, typename TagT>
   size_t Index<T, TagT>::search_with_tags(const T *query, const uint64_t K, const unsigned L, TagT *tags,
                                           float *distances, std::vector<T *> &res_vectors) {
-    _u32 *indices = new unsigned[L];
+    uint32_t *indices = new unsigned[L];
     float *dist_interim = new float[L];
     search(query, L, L, indices, dist_interim);
 
@@ -1207,7 +1230,7 @@ namespace pipeann {
   template<typename T, typename TagT>
   size_t Index<T, TagT>::search_with_tags(const T *query, const size_t K, const unsigned L, TagT *tags,
                                           float *distances) {
-    _u32 *indices = new unsigned[L];
+    uint32_t *indices = new unsigned[L];
     float *dist_interim = new float[L];
     search(query, L, L, indices, dist_interim);
 
@@ -1354,12 +1377,6 @@ namespace pipeann {
     return 0;
   }
 
-  template<typename T, typename TagT>
-  void Index<T, TagT>::release_location() {
-    LockGuard guard(_change_lock);
-    _nd--;
-  }
-
   // Do not call consolidate_deletes() if you have not locked _change_lock.
   // Returns number of live points left after consolidation
   // proxy inserts all nghrs of deleted points
@@ -1377,30 +1394,31 @@ namespace pipeann {
     assert(_delete_set.size() <= _nd);
     assert(_empty_slots.size() + _nd == _max_points);
 
-    const unsigned range = parameters.Get<unsigned>("R");
-    const unsigned maxc = parameters.Get<unsigned>("C");
-    const float alpha = parameters.Get<float>("alpha");
+    const unsigned range = parameters.R;
+    const unsigned maxc = parameters.C;
+    const float alpha = parameters.alpha;
 
-    _u64 total_pts = _max_points + _num_frozen_pts;
+    uint64_t total_pts = _max_points + _num_frozen_pts;
     unsigned block_size = 1 << 10;
-    _s64 total_blocks = DIV_ROUND_UP(total_pts, block_size);
+    int64_t total_blocks = DIV_ROUND_UP(total_pts, block_size);
 
     auto start = std::chrono::high_resolution_clock::now();
 #pragma omp parallel for schedule(dynamic)
-    for (_s64 block = 0; block < total_blocks; ++block) {
+    for (int64_t block = 0; block < total_blocks; ++block) {
       tsl::robin_set<unsigned> candidate_set;
       std::vector<Neighbor> expanded_nghrs;
       std::vector<Neighbor> result;
 
-      for (_s64 i = block * block_size;
-           i < (_s64) ((block + 1) * block_size) && i < (_s64) (_max_points + _num_frozen_pts); i++) {
-        if ((_delete_set.find((_u32) i) == _delete_set.end()) && (_empty_slots.find((_u32) i) == _empty_slots.end())) {
+      for (int64_t i = block * block_size;
+           i < (int64_t) ((block + 1) * block_size) && i < (int64_t) (_max_points + _num_frozen_pts); i++) {
+        if ((_delete_set.find((uint32_t) i) == _delete_set.end()) &&
+            (_empty_slots.find((uint32_t) i) == _empty_slots.end())) {
           candidate_set.clear();
           expanded_nghrs.clear();
           result.clear();
 
           bool modify = false;
-          for (auto ngh : _final_graph[(_u32) i]) {
+          for (auto ngh : _final_graph[(uint32_t) i]) {
             if (_delete_set.find(ngh) != _delete_set.end()) {
               modify = true;
 
@@ -1424,10 +1442,10 @@ namespace pipeann {
             std::sort(expanded_nghrs.begin(), expanded_nghrs.end());
             occlude_list(expanded_nghrs, alpha, range, maxc, result);
 
-            _final_graph[(_u32) i].clear();
+            _final_graph[(uint32_t) i].clear();
             for (auto j : result) {
-              if (j.id != (_u32) i && (_delete_set.find(j.id) == _delete_set.end()))
-                _final_graph[(_u32) i].push_back(j.id);
+              if (j.id != (uint32_t) i && (_delete_set.find(j.id) == _delete_set.end()))
+                _final_graph[(uint32_t) i].push_back(j.id);
             }
           }
         }
@@ -1459,12 +1477,12 @@ namespace pipeann {
     if (_nd < _max_points) {
       if (_num_frozen_pts > 0) {
         // set new _ep to be frozen point
-        _ep = (_u32) _nd;
+        _ep = (uint32_t) _nd;
         if (!_final_graph[_max_points].empty()) {
           for (unsigned i = 0; i < _nd; i++)
             for (unsigned j = 0; j < _final_graph[i].size(); j++)
               if (_final_graph[i][j] == _max_points)
-                _final_graph[i][j] = (_u32) _nd;
+                _final_graph[i][j] = (uint32_t) _nd;
 
           _final_graph[_nd].clear();
           for (unsigned k = 0; k < _final_graph[_max_points].size(); k++)
@@ -1496,11 +1514,11 @@ namespace pipeann {
     auto start = std::chrono::high_resolution_clock::now();
     auto fnstart = start;
 
-    std::vector<unsigned> new_location = std::vector<unsigned>(_max_points + _num_frozen_pts, (_u32) _max_points);
+    std::vector<unsigned> new_location = std::vector<unsigned>(_max_points + _num_frozen_pts, (uint32_t) _max_points);
 
-    _u32 new_counter = 0;
+    uint32_t new_counter = 0;
 
-    for (_u32 old_counter = 0; old_counter < _max_points + _num_frozen_pts; old_counter++) {
+    for (uint32_t old_counter = 0; old_counter < _max_points + _num_frozen_pts; old_counter++) {
       if (_location_to_tag.find(old_counter) != _location_to_tag.end()) {
         new_location[old_counter] = new_counter;
         new_counter++;
@@ -1584,12 +1602,12 @@ namespace pipeann {
       _location_to_tag[iter.second] = iter.first;
     }
 
-    for (_u64 old = _nd; old < _max_points; ++old) {
+    for (uint64_t old = _nd; old < _max_points; ++old) {
       _final_graph[old].clear();
     }
     _delete_set.clear();
     _empty_slots.clear();
-    for (_u32 i = _nd; i < _max_points; i++) {
+    for (uint32_t i = _nd; i < _max_points; i++) {
       _empty_slots.insert(i);
     }
 
@@ -1607,7 +1625,7 @@ namespace pipeann {
   // It is not thread safe.
   template<typename T, typename TagT>
   int Index<T, TagT>::reserve_location() {
-    LockGuard guard(_change_lock);
+    std::lock_guard<std::mutex> guard(_change_lock);
     if (_nd >= _max_points) {
       return -1;
     }
@@ -1659,7 +1677,7 @@ namespace pipeann {
       return;
     }
     reposition_point(_nd, _max_points);
-    _ep = (_u32) _max_points;
+    _ep = (uint32_t) _max_points;
   }
 
   template<typename T, typename TagT>
@@ -1683,7 +1701,7 @@ namespace pipeann {
     _max_points = new_max_points;
     _ep = new_max_points;
 
-    for (_u32 i = _nd; i < _max_points; i++) {
+    for (uint32_t i = _nd; i < _max_points; i++) {
       _empty_slots.insert(i);
     }
 
@@ -1694,7 +1712,7 @@ namespace pipeann {
   template<typename T, typename TagT>
   int Index<T, TagT>::insert_point(const T *point, const Parameters &parameters, const TagT tag) {
     std::shared_lock<std::shared_timed_mutex> lock(_update_lock);
-    unsigned range = parameters.Get<unsigned>("R");
+    unsigned range = parameters.R;
     //    assert(_has_built);
     std::vector<Neighbor> pool;
     std::vector<Neighbor> tmp;
@@ -1721,15 +1739,15 @@ namespace pipeann {
 
     auto location = reserve_location();
     if (location == -1) {
-      LOG(INFO) << "Thread: " << std::this_thread::get_id() << " location  == -1. Waiting for unique_lock. ";
+      DLOG(INFO) << "Thread: " << std::this_thread::get_id() << " location  == -1. Waiting for unique_lock. ";
       lock.unlock();
       std::unique_lock<std::shared_timed_mutex> growth_lock(_update_lock);
 
-      LOG(INFO) << "Thread: " << std::this_thread::get_id() << " Obtained unique_lock. ";
+      DLOG(INFO) << "Thread: " << std::this_thread::get_id() << " Obtained unique_lock. ";
       if (_nd >= _max_points) {
         auto new_max_points = (size_t) (_max_points * INDEX_GROWTH_FACTOR);
-        LOG(ERROR) << "Thread: " << std::this_thread::get_id() << ": Increasing _max_points from " << _max_points
-                   << " to " << new_max_points << " _nd is: " << _nd;
+        LOG(INFO) << "Thread: " << std::this_thread::get_id() << ": Increasing _max_points from " << _max_points
+                  << " to " << new_max_points << " _nd is: " << _nd;
         resize(new_max_points);
       }
       growth_lock.unlock();
@@ -1757,7 +1775,7 @@ namespace pipeann {
     tmp.clear();
     visited.clear();
     std::vector<unsigned> pruned_list;
-    unsigned Lindex = parameters.Get<unsigned>("L");
+    unsigned Lindex = parameters.L;
 
     std::vector<unsigned> init_ids;
     get_expanded_nodes(location, Lindex, init_ids, pool, visited);
@@ -1774,7 +1792,7 @@ namespace pipeann {
 
     _final_graph[location].clear();
     _final_graph[location].shrink_to_fit();
-    _final_graph[location].reserve((_u64) (range * SLACK_FACTOR * 1.05));
+    _final_graph[location].reserve((uint64_t) (range * SLACK_FACTOR * 1.05));
 
     if (pruned_list.empty()) {
       LOG(INFO) << "Thread: " << std::this_thread::get_id() << "Tag id: " << tag
