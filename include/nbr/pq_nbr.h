@@ -5,7 +5,7 @@
 #include <immintrin.h>
 #include <sstream>
 #include <string_view>
-#include <mutex>
+#include <shared_mutex>
 #include "nbr/pq_table.h"
 #include "ssd_index_defs.h"
 #include "nbr/abstract_nbr.h"
@@ -52,6 +52,7 @@ namespace pipeann {
     // call initialize_query first!
     // output to query_buf->aligned_dist_scratch
     void compute_dists(QueryBuffer<T> *query_buf, const uint32_t *ids, const uint64_t n_ids) {
+      std::shared_lock<std::shared_mutex> lock(pq_mu);
       aggregate_coords(ids, n_ids, this->data.data(), pq_table.n_chunks, query_buf->nbr_vec_scratch);
       pq_dist_lookup(query_buf->nbr_vec_scratch, n_ids, pq_table.n_chunks, query_buf->nbr_ctx_scratch,
                      query_buf->aligned_dist_scratch);
@@ -59,6 +60,7 @@ namespace pipeann {
 
     void compute_dists(const uint32_t query_id, const uint32_t *ids, const uint64_t n_ids, float *dists_out,
                        uint8_t *aligned_scratch) {
+      std::shared_lock<std::shared_mutex> lock(pq_mu);
       const uint8_t *src_ptr = this->data.data() + (pq_table.n_chunks * query_id);
       // aggregate PQ coords into scratch
       aggregate_coords(ids, n_ids, this->data.data(), pq_table.n_chunks, aligned_scratch);
@@ -141,8 +143,7 @@ namespace pipeann {
 
       uint64_t pq_offset = loc * pq_table.n_chunks;
       {
-        static std::mutex pq_mu;
-        std::lock_guard<std::mutex> lock(pq_mu);
+        std::unique_lock<std::shared_mutex> lock(pq_mu);
         if (this->data.size() < pq_offset + pq_table.n_chunks) {
           while (this->data.size() < pq_offset + pq_table.n_chunks) {
             this->data.resize(1.5 * this->data.size());
@@ -159,6 +160,7 @@ namespace pipeann {
     // data: uint8_t * pq_table.n_chunks
     // chunk_size = chunk size of each dimension chunk
     // pq_tables = float* [[2^8 * [chunk_size]] * pq_table.n_chunks]
+    std::shared_mutex pq_mu;
     std::vector<uint8_t> data;
     FixedChunkPQTable<T> pq_table;
 

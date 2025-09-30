@@ -107,7 +107,7 @@ namespace pipeann {
         LOG(INFO) << "Automatically set the update-related parameters.";
         this->l_index = meta.range + 32;
         this->beam_width = 4;
-        this->maxc = 750;
+        this->maxc = 384;
         this->alpha = 1.2;
         LOG(INFO) << "L_index: " << this->l_index << " beam_width: " << this->beam_width << " maxc: " << this->maxc
                   << " alpha: " << this->alpha;
@@ -139,7 +139,7 @@ namespace pipeann {
 
     QueryBuffer<T> *pop_query_buf(const T *query) {
       QueryBuffer<T> *data = this->thread_data_queue.pop();
-      while (data == nullptr) {
+      while (data == this->thread_data_queue.null_T) {
         this->thread_data_queue.wait_for_push_notify();
         data = this->thread_data_queue.pop();
       }

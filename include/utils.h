@@ -336,7 +336,7 @@ namespace pipeann {
   struct Parameters {
     uint32_t R = 0;              // maximum out-neighbors.
     uint32_t L = 0;              // build L.
-    uint32_t C = 750;            // delete pruning capacity.
+    uint32_t C = 384;            // delete pruning capacity.
     float alpha = 1.2f;          // alpha for Vamana.
     uint32_t num_threads = 0;    // num_threads used.
     bool saturate_graph = true;  // saturate graph during build (using kNN neighbors).

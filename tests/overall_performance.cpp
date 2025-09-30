@@ -25,7 +25,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define MERGE_ROUND 1
+#define MERGE_ROUND 20
 #define MERGE_IO_THRESHOLD 1.2
 #define NUM_INSERT_THREADS 10
 #define NUM_MERGE_THREADS 20

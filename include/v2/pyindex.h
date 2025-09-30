@@ -255,7 +255,8 @@ class PyIndex : public BasePyIndex {
     auto mu = std::shared_lock<std::shared_mutex>(save_mu_);
     auto tags_buf = tags.request();
     TagT *tags_ptr = static_cast<TagT *>(tags_buf.ptr);
-#pragma omp parallel for schedule(dynamic) num_threads(n_threads)
+    // Cannot parallel, as deleted_nodes_ is not thread_safe.
+    // This process is fast, so parallel is not mandatory.
     for (py::ssize_t i = 0; i < tags_buf.shape[0]; i++) {
       TagT tag = tags_ptr[i];
       if (deleted_nodes_set_.find(tag) == deleted_nodes_set_.end()) {
@@ -286,8 +287,8 @@ class PyIndex : public BasePyIndex {
     }
 
     if (use_disk_index_) {
-      disk_index_->merge_deletes(cur_index_prefix_, save_index_prefix, deleted_nodes_, deleted_nodes_set_,
-                                 params_.max_nthreads, params_.sampled_nbrs_for_delete);
+      disk_index_->merge_deletes(cur_index_prefix_, save_index_prefix, deleted_nodes_, deleted_nodes_set_, n_threads,
+                                 params_.sampled_nbrs_for_delete);
       disk_index_->reload(save_index_prefix.c_str(), 1);  // reload the newest index.
 
       if (cur_index_prefix_ == index_prefix) {

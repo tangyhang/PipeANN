@@ -247,7 +247,7 @@ namespace pipeann {
       set_loc2id(i, i);
     }
 
-    this->write_metadata_and_pq(in_path_prefix, out_path_prefix, new_npoints, id_map.find(medoid), &new_tags);
+    this->write_metadata_and_pq(in_path_prefix, out_path_prefix, new_npoints, medoid, &new_tags);
     LOG(INFO) << "Write metadata and PQ finished, totally elapsed " << delete_timer.elapsed() / 1e3 << "ms.";
     LOG(INFO) << "Write metadata finished, totally elapsed " << delete_timer.elapsed() / 1e3 << "ms.";
   }

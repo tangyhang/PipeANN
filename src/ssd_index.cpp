@@ -97,6 +97,7 @@ namespace pipeann {
   void SSDIndex<T, TagT>::init_buffers(uint64_t n_threads) {
     uint64_t n_buffers = n_threads * 2;
     LOG(INFO) << "Init buffers for " << n_threads << " threads, setup " << n_buffers << " buffers.";
+    this->thread_data_queue.null_T = nullptr;
     for (uint64_t i = 0; i < n_buffers; i++) {
       QueryBuffer<T> *data = new QueryBuffer<T>();
       this->init_query_buf(*data);

@@ -6,7 +6,7 @@
 #include "utils.h"
 
 int main(int argc, char **argv) {
-  if (argc <= 10) {
+  if (argc < 10) {
     std::cout << "Usage: " << argv[0]
               << " <data_type (float/int8/uint8)>  <data_file.bin>"
                  " <index_prefix_path> <R>  <L>  <PQ_bytes>  <M>  <T>"
