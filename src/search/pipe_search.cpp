@@ -62,7 +62,7 @@ namespace pipeann {
     // reset query
     query_buf->reset();
 
-    // pointers to buffers for data
+    // pointers to current vector for comparison
     T *data_buf = query_buf->coord_scratch;
     _mm_prefetch((char *) data_buf, _MM_HINT_T1);
 
@@ -150,11 +150,7 @@ namespace pipeann {
     }
     // search in in-memory index.
 
-#ifdef DYN_PIPE_WIDTH
     int64_t cur_beam_width = std::min(4ul, beam_width);  // before converge.
-#else
-    int64_t cur_beam_width = beam_width;  // before converge.
-#endif
     std::vector<unsigned> mem_tags(mem_L);
     std::vector<float> mem_dists(mem_L);
 

@@ -24,7 +24,7 @@ namespace pipeann {
   template<typename T, typename TagT>
   void SSDIndex<T, TagT>::do_beam_search(const T *query1, uint32_t mem_L, uint32_t l_search, const uint32_t beam_width,
                                          std::vector<Neighbor> &expanded_nodes_info,
-                                         tsl::robin_map<uint32_t, T *> *coord_map, QueryStats *stats,
+                                         tsl::robin_map<uint32_t, T *> *coord_map, T *coord_buf, QueryStats *stats,
                                          tsl::robin_set<uint32_t> *exclude_nodes /* tags */, bool dyn_search_l,
                                          std::vector<uint64_t> *passthrough_page_ref) {
     uint32_t original_l_search = l_search;
@@ -38,9 +38,8 @@ namespace pipeann {
     // reset query
     query_buf->reset();
 
-    // pointers to buffers for data
+    // pointers to current vector for comparison
     T *data_buf = query_buf->coord_scratch;
-    uint64_t &data_buf_idx = query_buf->coord_idx;
     _mm_prefetch((char *) data_buf, _MM_HINT_T1);
 
     // sector scratch
@@ -97,6 +96,7 @@ namespace pipeann {
     std::vector<uint64_t> new_page_ref{};
     std::vector<uint64_t> &page_ref = passthrough_page_ref ? *passthrough_page_ref : new_page_ref;
 
+    uint64_t coord_buf_idx = 0;  // used by coord_map
     while (k < cur_list_size) {
       auto nk = cur_list_size;
       // clear iteration state
@@ -155,15 +155,20 @@ namespace pipeann {
         unsigned *node_buf = offset_to_node_nhood(node_disk_buf);
         uint64_t nnbrs = (uint64_t) (*node_buf);
         T *node_fp_coords = offset_to_node_coords(node_disk_buf);
-        assert(data_buf_idx < MAX_N_CMPS);
 
-        T *node_fp_coords_copy = data_buf + (data_buf_idx * aligned_dim);
-        data_buf_idx++;
+        T *node_fp_coords_copy = data_buf;
         memcpy(node_fp_coords_copy, node_fp_coords, data_dim * sizeof(T));
         float cur_expanded_dist = dist_cmp->compare(query, node_fp_coords_copy, (unsigned) aligned_dim);
 
         if (coord_map != nullptr) {
+          if (unlikely(coord_buf == nullptr || coord_buf_idx > this->l_index * 10)) {
+            LOG(ERROR) << "Please allocate larger coord_buf.";
+            crash();
+          }
+          T *coord_ptr = coord_buf + coord_buf_idx * aligned_dim;
+          memcpy(coord_ptr, node_fp_coords, data_dim * sizeof(T));
           coord_map->insert(std::make_pair(id, node_fp_coords_copy));
+          coord_buf_idx++;
         }
         full_retset.push_back(Neighbor(id, cur_expanded_dist, true));
 
@@ -278,8 +283,8 @@ namespace pipeann {
     // iterate to fixed point
     std::shared_lock lk(merge_lock);
     std::vector<Neighbor> expanded_nodes_info;
-    this->do_beam_search(query, mem_L, (uint32_t) l_search, (uint32_t) beam_width, expanded_nodes_info, nullptr, stats,
-                         deleted_nodes, dyn_search_l);
+    this->do_beam_search(query, mem_L, (uint32_t) l_search, (uint32_t) beam_width, expanded_nodes_info, nullptr,
+                         nullptr, stats, deleted_nodes, dyn_search_l);
     uint64_t res_count = 0;
     for (uint32_t i = 0; i < l_search && res_count < k_search && i < expanded_nodes_info.size(); i++) {
       res_tags[res_count] = id2tag(expanded_nodes_info[i].id);

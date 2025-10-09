@@ -18,10 +18,10 @@ PipeANN is suitable for both **large-scale** and **memory-constraint** scenarios
 | ----- | --- | --- | --- | ------- | ----------- |
 | 1B (SPACEV) | 40GB | 2ms | 5K | ✅ | ❌ (1TB mem / 6ms)  |
 | 80M (Wiki) | 10GB | 1.5ms | 5K | ✅ | ❌ (300GB mem / 4ms) |
-| 10M (SIFT) | 1.5GB | <1ms | 10K | ✅ | ❌ (4GB mem / 3ms) |
+| 10M (SIFT) | 550MB | <1ms | 10K | ✅ | ❌ (4GB mem / 3ms) |
 
 Recall@10 = 0.99. Index is stored in a single Samsung PM9A3 (3.84TB) SSD.
-`NO_MAPPING` is enabled.
+We use 128B PQ-compressed vector for 768-dimensional Wiki, and 32B PQ-compressed vector for SIFT and SPACEV. `NO_MAPPING` is disabled.
 
 ## Prerequisites
 

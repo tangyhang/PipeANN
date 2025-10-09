@@ -9,6 +9,7 @@
 
 #include "aligned_file_reader.h"
 #include "utils/concurrent_queue.h"
+#include "utils/lock_table.h"
 #include "utils/percentile_stats.h"
 #include "nbr/pq_nbr.h"
 #include "utils.h"
@@ -57,7 +58,7 @@ namespace pipeann {
 
     // unaligned offset to location
     inline uint64_t u_loc_offset(uint64_t loc) {
-      return loc * max_node_len;
+      return loc * max_node_len;  // compacted store.
     }
 
     inline uint64_t u_loc_offset_nbr(uint64_t loc) {
@@ -74,7 +75,8 @@ namespace pipeann {
     }
 
     inline uint64_t sector_to_loc(uint64_t sector_no, uint32_t sector_off) {
-      return (sector_no - 1) * nnodes_per_sector + sector_off;
+      return nnodes_per_sector == 0 ? (sector_no - 1) / DIV_ROUND_UP(max_node_len, SECTOR_LEN)  // sector_off == 0.
+                                    : (sector_no - 1) * nnodes_per_sector + sector_off;
     }
 
     void init_metadata(const SSDIndexMetadata<T> &meta) {
@@ -87,12 +89,6 @@ namespace pipeann {
       this->nnodes_per_sector = meta.nnodes_per_sector;  // this makes reading to zero offset correct.
       this->size_per_io = SECTOR_LEN * (nnodes_per_sector > 0 ? 1 : DIV_ROUND_UP(max_node_len, SECTOR_LEN));
       LOG(INFO) << "Size per IO: " << size_per_io;
-
-      if (nnodes_per_sector > this->kMaxElemInAPage) {
-        LOG(ERROR) << "nnodes_per_sector: " << nnodes_per_sector << " is greater than " << this->kMaxElemInAPage
-                   << ". Please recompile with a higher value of kMaxElemInAPage.";
-        exit(-1);
-      }
 
       this->cur_loc = num_points;
       // aligned.
@@ -116,25 +112,21 @@ namespace pipeann {
     }
 
     void init_query_buf(QueryBuffer<T> &buf) {
-      uint64_t coord_alloc_size = ROUND_UP(MAX_N_CMPS * this->aligned_dim, 256);
-      pipeann::alloc_aligned((void **) &buf.coord_scratch, coord_alloc_size, 256);
-      pipeann::alloc_aligned((void **) &buf.sector_scratch, MAX_N_SECTOR_READS * SECTOR_LEN, SECTOR_LEN);
+      pipeann::alloc_aligned((void **) &buf.coord_scratch, this->aligned_dim * sizeof(T), 8 * sizeof(T));
+      pipeann::alloc_aligned((void **) &buf.sector_scratch, MAX_N_SECTOR_READS * size_per_io, SECTOR_LEN);
       pipeann::alloc_aligned((void **) &buf.nbr_vec_scratch,
                              MAX_N_EDGES * AbstractNeighbor<T>::MAX_BYTES_PER_NBR * sizeof(uint8_t), 256);
       pipeann::alloc_aligned((void **) &buf.nbr_ctx_scratch,
                              256 * AbstractNeighbor<T>::MAX_BYTES_PER_NBR * sizeof(float), 256);
       pipeann::alloc_aligned((void **) &buf.aligned_dist_scratch, MAX_N_EDGES * sizeof(float), 256);
       pipeann::alloc_aligned((void **) &buf.aligned_query_T, this->aligned_dim * sizeof(T), 8 * sizeof(T));
-      pipeann::alloc_aligned((void **) &buf.update_buf, (2 * MAX_N_EDGES + 1) * SECTOR_LEN,
-                             SECTOR_LEN);  // 2x for read + write
 
       buf.visited = new tsl::robin_set<uint64_t>(4096);
       buf.page_visited = new tsl::robin_set<unsigned>(4096);
 
       memset(buf.sector_scratch, 0, MAX_N_SECTOR_READS * SECTOR_LEN);
-      memset(buf.coord_scratch, 0, coord_alloc_size);
+      memset(buf.coord_scratch, 0, this->aligned_dim * sizeof(T));
       memset(buf.aligned_query_T, 0, this->aligned_dim * sizeof(T));
-      memset(buf.update_buf, 0, (2 * MAX_N_EDGES + 1) * SECTOR_LEN);
     }
 
     QueryBuffer<T> *pop_query_buf(const T *query) {
@@ -228,8 +220,9 @@ namespace pipeann {
     int insert_in_place(const T *point, const TagT &tag, tsl::robin_set<uint32_t> *deletion_set = nullptr);
     void do_beam_search(const T *vec, uint32_t mem_L, uint32_t Lsize, const uint32_t beam_width,
                         std::vector<Neighbor> &expanded_nodes_info, tsl::robin_map<uint32_t, T *> *coord_map = nullptr,
-                        QueryStats *stats = nullptr, tsl::robin_set<uint32_t> *exclude_nodes = nullptr,
-                        bool dyn_search_l = true, std::vector<uint64_t> *passthrough_page_ref = nullptr);
+                        T *coord_buf = nullptr, QueryStats *stats = nullptr,
+                        tsl::robin_set<uint32_t> *exclude_nodes = nullptr, bool dyn_search_l = true,
+                        std::vector<uint64_t> *passthrough_page_ref = nullptr);
     void occlude_list(std::vector<Neighbor> &pool, const tsl::robin_map<uint32_t, T *> &coord_map,
                       std::vector<Neighbor> &result, std::vector<float> &occlude_factor);
     void prune_neighbors(const tsl::robin_map<uint32_t, T *> &coord_map, std::vector<Neighbor> &pool,
@@ -405,19 +398,45 @@ namespace pipeann {
     // page search
     bool use_page_search_ = true;
 
-    libcuckoo::cuckoohash_map<uint32_t, uint32_t> id2loc_;  // id -> loc (start from 0)
+    // Concurrency control is done in lock_idx.
+    // Only resize should be protected.
+    std::vector<uint32_t> id2loc_;
+    v2::ReaderOptSharedMutex id2loc_resize_mu_;
+
     uint32_t id2loc(uint32_t id) {
 #ifdef NO_MAPPING
       return id;
 #else
-      uint32_t loc = 0;
-      if (id2loc_.find(id, loc)) {
-        return loc;
-      } else {
-        LOG(ERROR) << "id " << id << " not found in id2loc";
+      id2loc_resize_mu_.lock_shared();
+      if (unlikely(id >= id2loc_.size())) {
+        LOG(ERROR) << "id " << id << " is out of range " << id2loc_.size();
         crash();
         return kInvalidID;
       }
+      uint32_t ret = id2loc_[id];
+      id2loc_resize_mu_.unlock_shared();
+      return ret;
+#endif
+    }
+
+    void set_id2loc(uint32_t id, uint32_t loc) {
+#ifdef NO_MAPPING
+      return;
+#else
+      if (unlikely(id >= id2loc_.size())) {
+        id2loc_resize_mu_.lock();
+        if (likely(id >= id2loc_.size())) {
+          id2loc_.resize(1.5 * id);
+          LOG(INFO) << "Resize id2loc_ to " << id2loc_.size();
+        }
+        id2loc_resize_mu_.unlock();
+      }
+      // Here, we do not grab any locks. But no matter:
+      // Here, the id2loc_.size() must > id (as it only increases).
+      // So, we only need to ensure that no concurrent resize happens (use-after-free).
+      id2loc_resize_mu_.lock_shared();
+      id2loc_[id] = loc;
+      id2loc_resize_mu_.unlock_shared();
 #endif
     }
 
@@ -429,51 +448,71 @@ namespace pipeann {
       return loc_sector_no(loc);
     }
 
-    static constexpr uint32_t kMaxElemInAPage = 12;
-    using PageArr = std::array<uint32_t, kMaxElemInAPage>;
-    libcuckoo::cuckoohash_map<uint32_t, PageArr> page_layout;  // page_id (start from loc_sector_no(0)) -> ids
-
+    // If nnodes_per_sector >= 1, page_layout[i * nnodes_per_sector + j] is the id of the j-th node in the i-th page.
+    // ElseIf nnodes_per_sector == 0, page_layout[i] is the id of the i-th node (starting from loc_sector_no(i)).
+    std::vector<uint32_t> loc2id_;
+    v2::ReaderOptSharedMutex loc2id_resize_mu_;
     std::mutex alloc_lock;
+    ConcurrentQueue<uint32_t> empty_pages = ConcurrentQueue<uint32_t>(kInvalidID);
+
+    using PageArr = std::vector<uint32_t>;
+
+    PageArr get_page_layout(uint32_t page_no) {
+      loc2id_resize_mu_.lock_shared();
+      PageArr ret;
+      auto st = sector_to_loc(page_no, 0);
+      auto ed = nnodes_per_sector == 0 ? st + 1 : st + nnodes_per_sector;
+      for (uint32_t i = st; i < ed; ++i) {
+        ret.push_back(loc2id_[i]);
+      }
+      loc2id_resize_mu_.unlock_shared();
+      return ret;
+    }
+
     uint32_t loc2id(uint32_t loc) {
-      uint32_t page = loc_sector_no(loc);
-      uint32_t offset = loc % nnodes_per_sector;
-      uint32_t id = kInvalidID;
-      page_layout.find_fn(page, [&](PageArr &v) { id = v[offset]; });
-      return id;  // kInvalidID if fails.
+      loc2id_resize_mu_.lock_shared();
+      if (unlikely(loc > loc2id_.size())) {
+        LOG(ERROR) << "loc " << loc << " is out of range " << loc2id_.size();
+        crash();
+        return kInvalidID;
+      }
+      uint32_t ret = loc2id_[loc];
+      loc2id_resize_mu_.unlock_shared();
+      return ret;
     }
 
     void set_loc2id(uint32_t loc, uint32_t id) {
-      uint32_t page = loc_sector_no(loc);
-      uint32_t offset = loc % nnodes_per_sector;
-      page_layout.upsert(page, [&](PageArr &v, libcuckoo::UpsertContext ctx) {
-        if (ctx == libcuckoo::UpsertContext::NEWLY_INSERTED) {
-          for (uint32_t i = 0; i < nnodes_per_sector; ++i) {
-            v[i] = kInvalidID;
-          }
+      if (unlikely(loc >= loc2id_.size())) {
+        loc2id_resize_mu_.lock();
+        if (likely(loc >= loc2id_.size())) {
+          loc2id_.resize(1.5 * loc);
+          LOG(INFO) << "Resize loc2id_ to " << loc2id_.size();
         }
-        v[offset] = id;
-      });
+        loc2id_resize_mu_.unlock();
+      }
+      loc2id_resize_mu_.lock_shared();
+      loc2id_[loc] = id;
+      loc2id_resize_mu_.unlock_shared();
     }
 
     void erase_loc2id(uint32_t loc) {
+      loc2id_resize_mu_.lock_shared();
+      loc2id_[loc] = kInvalidID;
+      uint32_t st = sector_to_loc(loc_sector_no(loc), 0);
+      bool empty = true;
+      for (uint32_t i = st; i < st + nnodes_per_sector; ++i) {
+        if (loc2id_[i] != kInvalidID) {
+          empty = false;
+          break;
+        }
+      }
+      if (empty) {
+        empty_pages.push(loc_sector_no(loc));
+      }
       uint32_t page = loc_sector_no(loc);
       uint32_t offset = loc % nnodes_per_sector;
-      page_layout.upsert(page, [&](PageArr &v) {
-        v[offset] = kInvalidID;
-        bool empty = true;
-        for (uint32_t i = 0; i < nnodes_per_sector; ++i) {
-          if (v[i] != kInvalidID) {
-            empty = false;
-            break;
-          }
-        }
-        if (empty) {
-          empty_pages.push(page);
-        }
-      });
+      loc2id_resize_mu_.unlock_shared();
     }
-
-    ConcurrentQueue<uint32_t> empty_pages = ConcurrentQueue<uint32_t>(kInvalidID);
 
     void erase_and_set_loc(const std::vector<uint64_t> &old_locs, const std::vector<uint64_t> &new_locs,
                            const std::vector<uint32_t> &new_ids) {
@@ -495,6 +534,7 @@ namespace pipeann {
       // reuse.
       uint32_t threshold = (nnodes_per_sector + kIndexSizeFactor - 1) / kIndexSizeFactor;
 
+      // 1. use empty pages.
       uint32_t empty_page = kInvalidID;
       while ((empty_page = empty_pages.pop()) != kInvalidID) {
 #ifdef NO_POLLUTE_ORIGINAL
@@ -502,78 +542,69 @@ namespace pipeann {
           continue;
         }
 #endif
-        // allocate all the pages.
-        page_layout.update_fn(empty_page, [&](PageArr &v) {
-          for (uint32_t i = 0; i < nnodes_per_sector; ++i) {
-            if (v[i] != kInvalidID) {
-              LOG(ERROR) << "Page " << empty_page << " is not empty " << i << " " << v[i];
-              crash();
-            }
-            v[i] = kAllocatedID;
-            ret.push_back(sector_to_loc(empty_page, i));
-            cur++;
-            if (cur == n) {
-              return;
-            }
+        auto st = sector_to_loc(empty_page, 0);
+        auto ed = nnodes_per_sector == 0 ? st + 1 : st + nnodes_per_sector;
+        for (uint32_t i = st; i < ed; ++i) {
+          if (unlikely(loc2id_[i] != kInvalidID)) {
+            LOG(ERROR) << "Page " << empty_page << " is not empty " << i << " " << loc2id_[i];
+            crash();
           }
-        });
-        if (cur == n) {
-          return ret;
+          loc2id_[i] = kAllocatedID;
+          ret.push_back(i);
+          ++cur;
+          if (cur == n) {
+            return ret;
+          }
         }
       }
 
+      // 2. use hint pages.
       for (auto &p : hint_pages) {
 #ifdef NO_POLLUTE_ORIGINAL
         if (p < loc_sector_no(init_num_pts)) {
           continue;
         }
 #endif
-        // see the hole number
-        page_layout.update_fn(p, [&](PageArr &v) {
-          uint32_t cnt = 0;
-          for (uint32_t i = 0; i < nnodes_per_sector; ++i) {
-            uint32_t id = v[i];
-            if (id == kInvalidID) {
-              cnt++;
+        // first, see the number of holes.
+        uint32_t cnt = 0;
+        auto st = sector_to_loc(p, 0);
+        auto ed = nnodes_per_sector == 0 ? st + 1 : st + nnodes_per_sector;
+        for (uint32_t i = st; i < ed; ++i) {
+          if (loc2id_[i] == kInvalidID) {
+            cnt++;
+          }
+        }
+        if (cnt < threshold) {
+          continue;
+        }
+        // second, allocate them.
+        if (cnt < nnodes_per_sector) {
+          page_need_to_read.insert(p);
+        }
+        for (uint32_t i = st; i < ed; ++i) {
+          if (loc2id_[i] == kInvalidID) {
+            loc2id_[i] = kAllocatedID;
+            ret.push_back(i);
+            ++cur;
+            if (cur == n) {
+              return ret;
             }
           }
-          if (cnt < threshold) {
-            return;
-          }
-
-          if (cnt < nnodes_per_sector) {
-            page_need_to_read.insert(p);
-          }
-          // alloc them.
-          for (uint32_t i = 0; i < nnodes_per_sector; ++i) {
-            if (v[i] == kInvalidID) {
-              v[i] = kAllocatedID;
-              ret.push_back(sector_to_loc(p, i));
-              cur++;
-              if (cur == n) {
-                return;
-              }
-            }
-          }
-        });
-
-        if (cur == n) {
-          return ret;
         }
       }
 
-      // allocate new space.
+      // 3. use new pages.
       int remaining = n - cur;
       for (int i = 0; i < remaining; i++) {
-        set_loc2id(cur_loc + i, kAllocatedID);
+        set_loc2id(cur_loc + i, kAllocatedID);  // auto resize.
         ret.push_back(cur_loc + i);
       }
 
       // ensure that cur_loc is aligned.
       // the hole will eventually be recycled using either empty page queue or hint pages.
       cur_loc += remaining;
-      if (cur_loc % nnodes_per_sector != 0) {
-        cur_loc += (nnodes_per_sector - (cur_loc % nnodes_per_sector));
+      while (nnodes_per_sector != 0 && cur_loc % nnodes_per_sector != 0) {
+        set_loc2id(cur_loc++, kInvalidID);  // auto resize.
       }
       return ret;
     }
@@ -635,7 +666,6 @@ namespace pipeann {
     // thread-specific scratch
     ConcurrentQueue<QueryBuffer<T> *> thread_data_queue;
     std::vector<QueryBuffer<T> *> thread_data_bufs;  // pre-allocated thread data
-    std::vector<uint8_t *> thread_pq_bufs;           // for merge deletes
     uint64_t max_nthreads;
 
     bool load_flag = false;    // already loaded.

@@ -1,7 +1,9 @@
 #ifndef LOCK_TABLE_H_
 #define LOCK_TABLE_H_
 #include <chrono>
-#include "ssd_index_defs.h"
+#include <cstddef>
+#include <omp.h>
+#include <shared_mutex>
 #include "utils/libcuckoo/cuckoohash_map.hh"
 #include "utils/log.h"
 
@@ -230,6 +232,32 @@ namespace v2 {
 
    private:
     pthread_rwlock_t *lock_;
+  };
+
+  // Used by fixed-size arrays (with resize).
+  // Why use this? Resize is very rare, but a single shared_mutex incurs cache ping-pong.
+  struct ReaderOptSharedMutex {
+    static constexpr int N = 128;
+    struct CachelineAlignedMutex {
+      std::shared_mutex mutex;
+      char padding[128 - sizeof(std::shared_mutex)];
+    } locks_[N];
+    void lock_shared(size_t idx = omp_get_thread_num()) {
+      locks_[idx % N].mutex.lock_shared();
+    }
+    void lock() {
+      for (size_t i = 0; i < N; ++i) {
+        locks_[i].mutex.lock();
+      }
+    }
+    void unlock_shared(size_t idx = omp_get_thread_num()) {
+      locks_[idx % N].mutex.unlock_shared();
+    }
+    void unlock() {
+      for (size_t i = 0; i < N; ++i) {
+        locks_[i].mutex.unlock();
+      }
+    }
   };
 
 }  // namespace v2

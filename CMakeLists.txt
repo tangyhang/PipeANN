@@ -40,7 +40,6 @@ add_definitions(
 	# -DREAD_ONLY_TESTS
 	# -DNO_MAPPING # starling: must disable this!
 	-DOVERLAP_INIT
-	-DDYN_PIPE_WIDTH
 )
 
 include_directories(

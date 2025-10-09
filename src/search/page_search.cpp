@@ -38,7 +38,7 @@ namespace pipeann {
     // reset query
     query_buf->reset();
 
-    // pointers to buffers for data
+    // pointers to current vector for comparison
     T *data_buf = query_buf->coord_scratch;
     _mm_prefetch((char *) data_buf, _MM_HINT_T1);
 
@@ -183,11 +183,7 @@ namespace pipeann {
           auto id = frontier[i];
           uint64_t page_id = id2page(id);
           auto buf = sector_scratch + sector_scratch_idx * size_per_io;
-          PageArr layout;
-          if (unlikely(!page_layout.find(page_id, layout))) {
-            LOG(ERROR) << "Page layout not found for page " << page_id;
-            crash();
-          }
+          PageArr layout = get_page_layout(page_id);
           page_fnhood_t fnhood = std::make_tuple(id, page_id, layout, buf);
           sector_scratch_idx++;
           frontier_nhoods.push_back(fnhood);

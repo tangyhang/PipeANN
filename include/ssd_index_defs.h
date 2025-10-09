@@ -5,7 +5,7 @@
 #include "utils/tsl/robin_set.h"
 
 #define SECTOR_LEN 4096
-#define MAX_N_SECTOR_READS 2048
+#define MAX_N_SECTOR_READS 128
 // Both unaligned and aligned.
 // example: a record locates in [300, 500], then
 // offset = 0, len = 4096 (aligned read for disk)
@@ -47,8 +47,7 @@ namespace pipeann {
 
   template<typename T>
   struct QueryBuffer {
-    T *coord_scratch = nullptr;  // MUST BE AT LEAST [MAX_N_CMPS * data_dim], for vectors visited.
-    uint64_t coord_idx = 0;      // index of next [data_dim] scratch to use
+    T *coord_scratch = nullptr;  // MUST BE AT LEAST [aligned_dim], for current vector in comparison.
 
     char *sector_scratch = nullptr;  // MUST BE AT LEAST [MAX_N_SECTOR_READS * SECTOR_LEN], for sectors.
     uint64_t sector_idx = 0;         // index of next [SECTOR_LEN] scratch to use
@@ -57,14 +56,13 @@ namespace pipeann {
     float *aligned_dist_scratch = nullptr;  // MUST BE AT LEAST pipeann MAX_DEGREE, for exact dist.
     uint8_t *nbr_vec_scratch = nullptr;     // MUST BE AT LEAST  [N_CHUNKS * MAX_DEGREE], for neighbor PQ vectors.
     T *aligned_query_T = nullptr;
-    char *update_buf = nullptr;
+    char *update_buf = nullptr;  // Dynamic allocate in insert_in_place.
 
     tsl::robin_set<uint64_t> *visited = nullptr;
     tsl::robin_set<unsigned> *page_visited = nullptr;
     IORequest reqs[MAX_N_SECTOR_READS];
 
     void reset() {
-      coord_idx = 0;
       sector_idx = 0;
       visited->clear();  // does not deallocate memory.
       page_visited->clear();

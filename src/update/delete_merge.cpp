@@ -101,6 +101,7 @@ namespace pipeann {
     }
     LOG(INFO) << "Finished populating neighborhoods, totally elapsed: " << delete_timer.elapsed() / 1e3
               << "ms, new npoints: " << new_npoints.load() << " " << "id_map size: " << id_map.size();
+    LOG(INFO) << "Deleted nodes size: " << deleted_nodes.size() << ", deleted_nhoods size: " << deleted_nhoods.size();
 
     // Step 2: prune neighbors, populate PQ and tags.
     int fd = open(disk_index_out.c_str(), O_DIRECT | O_LARGEFILE | O_RDWR | O_CREAT, 0755);
@@ -164,8 +165,10 @@ namespace pipeann {
         if (nhood.size() > this->range) {
           std::vector<float> dists(nhood.size(), 0.0f);
           std::vector<Neighbor> pool(nhood.size());
-          auto &thread_pq_buf = thread_pq_bufs[omp_get_thread_num()];
-          nbr_handler->compute_dists(id, nhood.data(), nhood.size(), dists.data(), thread_pq_buf);
+          // Use dynamic buffer instead of pre-initialized buffer to save space.
+          uint8_t *pq_buf = nullptr;
+          pipeann::alloc_aligned((void **) &pq_buf, nhood.size() * AbstractNeighbor<T>::MAX_BYTES_PER_NBR, 256);
+          nbr_handler->compute_dists(id, nhood.data(), nhood.size(), dists.data(), pq_buf);
 
           for (uint32_t k = 0; k < nhood.size(); k++) {
             pool[k].id = nhood[k];
@@ -176,7 +179,8 @@ namespace pipeann {
             pool.resize(this->maxc);
           }
           nhood.clear();
-          this->prune_neighbors_pq(pool, nhood, thread_pq_buf);
+          this->prune_neighbors_pq(pool, nhood, pq_buf);
+          pipeann::aligned_free(pq_buf);
         }
 
         // map to new IDs.
@@ -217,7 +221,7 @@ namespace pipeann {
     auto new_nbr_handler = this->nbr_handler->shuffle(rev_id_map, new_npoints, nthreads);
 
     while (deleted_nodes_set.find(id2tag(medoid)) != deleted_nodes_set.end()) {
-      LOG(INFO) << "Medoid deleted. Choosing another start node.";
+      LOG(INFO) << "Medoid deleted. Choosing another start node. Medoid ID: " << medoid << " tag: " << id2tag(medoid);
       const auto &nhoods = deleted_nhoods.find(medoid);
       medoid = nhoods[0];
     }
@@ -237,19 +241,17 @@ namespace pipeann {
     delete tmp;
     // tags.
     tags.clear();
-    id2loc_.clear();
-    page_layout.clear();
+    // no need to clear id2loc & loc2id as they are arrays.
+    // out-of-bound loc2id is initialized in reload().
 #pragma omp parallel for num_threads(nthreads)
     for (size_t i = 0; i < new_tags.size(); ++i) {
       tags.insert_or_assign(i, new_tags[i]);
-      // TODO(gh): use partition data to init id2loc_ and page_layout.
-      id2loc_.insert_or_assign(i, i);
+      set_id2loc(i, i);
       set_loc2id(i, i);
     }
 
     this->write_metadata_and_pq(in_path_prefix, out_path_prefix, new_npoints, medoid, &new_tags);
     LOG(INFO) << "Write metadata and PQ finished, totally elapsed " << delete_timer.elapsed() / 1e3 << "ms.";
-    LOG(INFO) << "Write metadata finished, totally elapsed " << delete_timer.elapsed() / 1e3 << "ms.";
   }
 
   template<typename T, typename TagT>
@@ -290,6 +292,9 @@ namespace pipeann {
     this->init_metadata(meta);
 
     // No need to reload PQ, as it is already reloaded in merge_deletes.
+    for (uint32_t i = this->num_points; i < this->cur_loc; ++i) {
+      set_loc2id(i, kInvalidID);  // reset loc2id.
+    }
     while (!this->empty_pages.empty()) {
       this->empty_pages.pop();
     }

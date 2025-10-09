@@ -10,6 +10,7 @@
 #include "ssd_index_defs.h"
 #include "nbr/abstract_nbr.h"
 #include "partition.h"
+#include "utils/lock_table.h"
 #include "utils/tsl/robin_map.h"
 #include "math_utils.h"
 #include "utils/cached_io.h"
@@ -52,20 +53,22 @@ namespace pipeann {
     // call initialize_query first!
     // output to query_buf->aligned_dist_scratch
     void compute_dists(QueryBuffer<T> *query_buf, const uint32_t *ids, const uint64_t n_ids) {
-      std::shared_lock<std::shared_mutex> lock(pq_mu);
+      pq_mu.lock_shared();
       aggregate_coords(ids, n_ids, this->data.data(), pq_table.n_chunks, query_buf->nbr_vec_scratch);
       pq_dist_lookup(query_buf->nbr_vec_scratch, n_ids, pq_table.n_chunks, query_buf->nbr_ctx_scratch,
                      query_buf->aligned_dist_scratch);
+      pq_mu.unlock_shared();
     }
 
     void compute_dists(const uint32_t query_id, const uint32_t *ids, const uint64_t n_ids, float *dists_out,
                        uint8_t *aligned_scratch) {
-      std::shared_lock<std::shared_mutex> lock(pq_mu);
+      pq_mu.lock_shared();
       const uint8_t *src_ptr = this->data.data() + (pq_table.n_chunks * query_id);
       // aggregate PQ coords into scratch
       aggregate_coords(ids, n_ids, this->data.data(), pq_table.n_chunks, aligned_scratch);
       // compute distances
       this->pq_table.compute_distances_alltoall(src_ptr, aligned_scratch, dists_out, n_ids);
+      pq_mu.unlock_shared();
     }
 
     void load(const char *index_prefix) {
@@ -143,14 +146,13 @@ namespace pipeann {
 
       uint64_t pq_offset = loc * pq_table.n_chunks;
       {
-        std::unique_lock<std::shared_mutex> lock(pq_mu);
+        pq_mu.lock();
         if (this->data.size() < pq_offset + pq_table.n_chunks) {
-          while (this->data.size() < pq_offset + pq_table.n_chunks) {
-            this->data.resize(1.5 * this->data.size());
-          }
+          this->data.resize(1.5 * (pq_offset + pq_table.n_chunks));
         }
         memcpy(this->data.data() + pq_offset, pq_coords.data(), pq_table.n_chunks);
         this->npoints = std::max(this->npoints, (uint64_t) (loc + 1));
+        pq_mu.unlock();
       }
     }
 
@@ -160,7 +162,7 @@ namespace pipeann {
     // data: uint8_t * pq_table.n_chunks
     // chunk_size = chunk size of each dimension chunk
     // pq_tables = float* [[2^8 * [chunk_size]] * pq_table.n_chunks]
-    std::shared_mutex pq_mu;
+    v2::ReaderOptSharedMutex pq_mu;
     std::vector<uint8_t> data;
     FixedChunkPQTable<T> pq_table;
 

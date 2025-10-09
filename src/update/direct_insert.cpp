@@ -38,16 +38,20 @@ namespace pipeann {
 
     std::vector<Neighbor> exp_node_info;
     tsl::robin_map<uint32_t, T *> coord_map;
-    coord_map.reserve(2 * this->l_index);
-
+    coord_map.reserve(10 * this->l_index);
+    // Dynamic alloc and not using MAX_N_CMPS to reduce memory footprint.
+    T *coord_buf = nullptr;
+    alloc_aligned((void **) &coord_buf, 10 * this->l_index * this->aligned_dim, 256);
     std::vector<uint64_t> page_ref{};
     // re-normalize point1 to support inner_product search (it adds one more dimension, so not idempotent).
-    this->do_beam_search(point1, 0, l_index, beam_width, exp_node_info, &coord_map, nullptr, deletion_set, false,
-                         &page_ref);
+    this->do_beam_search(point1, 0, l_index, beam_width, exp_node_info, &coord_map, coord_buf, nullptr, deletion_set,
+                         false, &page_ref);
     std::vector<uint32_t> new_nhood;
     prune_neighbors(coord_map, exp_node_info, new_nhood);
     // locs[new_nhood.size()] is the target, locs[0:new_nhood.size() - 1] are the neighbors.
     // lock the pages to write
+    aligned_free(coord_buf);
+
     std::set<uint64_t> pages_need_to_read;
 
 #ifdef IN_PLACE_RECORD_UPDATE
@@ -58,7 +62,7 @@ namespace pipeann {
     }
     locs.push_back(target_id);
     pages_need_to_read.insert(loc_sector_no(target_id));
-    id2loc_.insert_or_assign(target_id, target_id);
+    set_id2loc(target_id, target_id);
 
     // update loc2id, target_id <-> target_id.
     cur_loc++;  // for target ID, atomic update.
@@ -83,7 +87,12 @@ namespace pipeann {
     // re-read the candidate pages (mostly in the cache).
     std::unordered_map<uint32_t, char *> page_buf_map;
 
+    // dynamically allocate update_buf to reduce memory footprint.
+    // 2x MAX_N_EDGES for read + write, the update_buf is freed in bg_io_thread.
+    assert(read_data->update_buf == nullptr);
+    pipeann::alloc_aligned((void **) &read_data->update_buf, (2 * MAX_N_EDGES + 1) * size_per_io, SECTOR_LEN);
     auto &update_buf = read_data->update_buf;
+
     std::vector<IORequest> reads, writes_4k, writes;
     assert(new_nhood.size() < MAX_N_EDGES);
     for (uint32_t i = 0; i < new_nhood.size(); ++i) {
@@ -186,13 +195,13 @@ namespace pipeann {
 #ifndef IN_PLACE_RECORD_UPDATE
     // update locs
     // no concurrency issue for target_id (as it can be only inserted).
-    id2loc_.insert_or_assign(target_id, locs[new_nhood.size()]);
+    set_id2loc(target_id, locs[new_nhood.size()]);
     auto locked = lock_idx(idx_lock_table, target_id, new_nhood);
     auto page_locked = lock_page_idx(page_idx_lock_table, target_id, new_nhood);
     std::vector<uint64_t> orig_locs;
     for (uint32_t i = 0; i < new_nhood.size(); ++i) {
       orig_locs.emplace_back(id2loc(new_nhood[i]));
-      id2loc_.insert_or_assign(new_nhood[i], locs[i]);
+      set_id2loc(new_nhood[i], locs[i]);
     }
 
     // with lock, for simple concurrency with alloc_loc.
@@ -222,6 +231,9 @@ namespace pipeann {
     reader->deref(&page_ref, ctx);
 #else
     reader->write(writes, ctx);
+    aligned_free(read_data->update_buf);
+    read_data->update_buf = nullptr;
+
     v2::unlockReqs(this->page_lock_table, pages_locked);
     reader->deref(&write_page_ref, ctx);
 
@@ -234,8 +246,6 @@ namespace pipeann {
   template<class T, class TagT>
   void SSDIndex<T, TagT>::bg_io_thread() {
     auto ctx = reader->get_ctx();
-    uint8_t *buf = nullptr;
-    pipeann::alloc_aligned((void **) &buf, (MAX_N_EDGES + 1) * SECTOR_LEN, SECTOR_LEN);
     auto timer = pipeann::Timer();
     uint64_t n_tasks = 0;
 
@@ -252,6 +262,9 @@ namespace pipeann {
       }
 
       reader->write(task->writes, ctx);
+      aligned_free(task->thread_data->update_buf);
+      task->thread_data->update_buf = nullptr;
+
       v2::unlockReqs(this->page_lock_table, task->pages_to_unlock);
       reader->deref(&task->pages_to_deref, ctx);
       this->push_query_buf(task->thread_data);

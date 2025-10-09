@@ -14,6 +14,7 @@
 #include "ssd_index.h"
 #include "utils.h"
 #include <sys/sysinfo.h>
+#include <gperftools/malloc_extension.h>
 
 namespace py = pybind11;
 
@@ -304,7 +305,7 @@ class PyIndex : public BasePyIndex {
       // if not using disk index, or using mem index for disk index, save mem index.
       mem_index_->save((index_prefix + "_mem.index").c_str());
     }
-
+    MallocExtension::instance()->ReleaseFreeMemory();  // Return free list to OS.
     return true;
   }
 

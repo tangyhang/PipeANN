@@ -35,8 +35,7 @@ namespace pipeann {
       QueryBuffer<T> query_buf;
       char sectors[SECTOR_LEN * 128];
       T query[kMaxVectorDim];
-      T data_buf[ROUND_UP(1024 * kMaxVectorDim, 256)];
-      uint64_t data_buf_idx;
+      T data_buf[ROUND_UP(kMaxVectorDim, 256)];
       uint64_t sector_idx;
 
       // search state.
@@ -60,7 +59,6 @@ namespace pipeann {
       }
 
       void reset() {
-        data_buf_idx = 0;
         sector_idx = 0;
         visited.clear();  // does not deallocate memory.
         retset.resize(4096);
@@ -139,8 +137,7 @@ namespace pipeann {
           uint64_t nnbrs = (uint64_t) (*node_buf);
           T *node_fp_coords = parent->offset_to_node_coords(node_disk_buf);
 
-          T *node_fp_coords_copy = data_buf + (data_buf_idx * parent->aligned_dim);
-          data_buf_idx++;
+          T *node_fp_coords_copy = data_buf;
           memcpy(node_fp_coords_copy, node_fp_coords, parent->data_dim * sizeof(T));
           float cur_expanded_dist =
               parent->dist_cmp->compare(query, node_fp_coords_copy, (unsigned) parent->aligned_dim);

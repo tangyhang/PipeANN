@@ -106,12 +106,6 @@ namespace pipeann {
       this->reader->register_buf(data->sector_scratch, MAX_N_SECTOR_READS * SECTOR_LEN, 0);
     }
 
-    for (uint64_t i = 0; i < n_buffers; ++i) {
-      uint8_t *thread_pq_buf;
-      pipeann::alloc_aligned((void **) &thread_pq_buf, 16ul << 20, 256);
-      thread_pq_bufs.push_back(thread_pq_buf);
-    }
-
 #ifndef READ_ONLY_TESTS
     // background thread.
     LOG(INFO) << "Setup " << kBgIOThreads << " background I/O threads for insert...";
@@ -144,16 +138,9 @@ namespace pipeann {
       pipeann::aligned_free((void *) buf->nbr_ctx_scratch);
       pipeann::aligned_free((void *) buf->aligned_dist_scratch);
       pipeann::aligned_free((void *) buf->aligned_query_T);
-      pipeann::aligned_free((void *) buf->update_buf);
       this->thread_data_bufs.pop_back();
       this->thread_data_queue.pop();
       delete buf;
-    }
-
-    while (this->thread_pq_bufs.size() > 0) {
-      auto buf = this->thread_pq_bufs.back();
-      this->thread_pq_bufs.pop_back();
-      pipeann::aligned_free((void *) buf);
     }
   }
 
@@ -192,7 +179,7 @@ namespace pipeann {
     this->init_buffers(num_threads);
     this->max_nthreads = num_threads;
 
-    // load page layout and set cur_loc
+    // load page layout.
     this->use_page_search_ = use_page_search;
     this->load_page_layout(index_prefix, nnodes_per_sector, num_points);
 
@@ -217,6 +204,9 @@ namespace pipeann {
   void SSDIndex<T, TagT>::load_page_layout(const std::string &index_prefix, const uint64_t nnodes_per_sector,
                                            const uint64_t num_points) {
     std::string partition_file = index_prefix + "_partition.bin.aligned";
+    id2loc_.resize(num_points);  // pre-allocate space first.
+    loc2id_.resize(cur_loc);     // pre-allocate space first.
+
     if (std::filesystem::exists(partition_file)) {
       LOG(INFO) << "Loading partition file " << partition_file;
       std::ifstream part(partition_file);
@@ -224,7 +214,8 @@ namespace pipeann {
       part.read((char *) &C, sizeof(uint64_t));
       part.read((char *) &partition_nums, sizeof(uint64_t));
       part.read((char *) &nd, sizeof(uint64_t));
-      if (nnodes_per_sector && num_points && (C != nnodes_per_sector)) {
+      if (nnodes_per_sector <= 1 || C != nnodes_per_sector) {
+        // graph reordering is useful only when nnodes_per_sector > 1.
         LOG(ERROR) << "partition information not correct.";
         exit(-1);
       }
@@ -240,15 +231,17 @@ namespace pipeann {
         part.read((char *) part_buf.data(), sizeof(unsigned) * n_parts_per_read * (1 + nnodes_per_sector));
 #pragma omp parallel for schedule(dynamic)
         for (uint64_t i = p; i < nxt_p; ++i) {
-          uint32_t s = part_buf[(i - p) * (1 + nnodes_per_sector)];
-          PageArr tmp_arr;
-          memcpy(tmp_arr.data(), part_buf.data() + (i - p) * (1 + nnodes_per_sector) + 1,
-                 sizeof(unsigned) * nnodes_per_sector);
+          uint32_t base = (i - p) * (1 + nnodes_per_sector);
+          uint32_t s = part_buf[base];  // size of this partition
           for (uint32_t j = 0; j < s; ++j) {
+            uint64_t id = part_buf[base + 1 + j];
             uint64_t loc = i * nnodes_per_sector + j;
-            id2loc_.insert_or_assign(tmp_arr[j], loc);
+            id2loc_[id] = loc;
+            loc2id_[loc] = id;
           }
-          this->page_layout.insert(page_offset + i, tmp_arr);
+          for (uint32_t j = s; j < nnodes_per_sector; ++j) {
+            loc2id_[i * nnodes_per_sector + j] = kInvalidID;
+          }
         }
       }
       auto et = std::chrono::high_resolution_clock::now();
@@ -260,22 +253,11 @@ namespace pipeann {
 #ifndef NO_MAPPING
 #pragma omp parallel for
       for (size_t i = 0; i < this->num_points; ++i) {
-        id2loc_.insert_or_assign(i, i);
+        id2loc_[i] = i;
+        loc2id_[i] = i;
       }
-
-      uint64_t page_offset = loc_sector_no(0);
-      uint64_t num_sectors = (num_points + nnodes_per_sector - 1) / nnodes_per_sector;
-#pragma omp parallel for
-      for (size_t i = 0; i < num_sectors; ++i) {
-        PageArr tmp_arr;
-        for (uint32_t j = 0; j < nnodes_per_sector; ++j) {
-          uint64_t id = i * nnodes_per_sector + j;
-          tmp_arr[j] = id < num_points ? id : kInvalidID;  // fill with kInvalidID if out of bounds.
-        }
-        for (uint32_t j = nnodes_per_sector; j < tmp_arr.size(); ++j) {
-          tmp_arr[j] = kInvalidID;
-        }
-        this->page_layout.insert(i + page_offset, tmp_arr);
+      for (size_t i = this->num_points; i < this->cur_loc; ++i) {
+        loc2id_[i] = kInvalidID;
       }
 #endif
     }
@@ -295,7 +277,6 @@ namespace pipeann {
       LOG(INFO) << "Load tags from existing file: " << tag_file_name;
       pipeann::load_bin<TagT>(tag_file_name, tag_v, tag_num, tag_dim, offset);
       tags.reserve(tag_v.size());
-      id2loc_.reserve(tag_v.size());
 
 #pragma omp parallel for num_threads(max_nthreads)
       for (size_t i = 0; i < tag_num; ++i) {
