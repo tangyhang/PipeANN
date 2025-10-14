@@ -1,16 +1,18 @@
+#include <cstdint>
 #include "nbr/abstract_nbr.h"
 #include "nbr/pq_nbr.h"
+#include "nbr/rabitq_nbr.h"
 #include "omp.h"
 
 #include "aux_utils.h"
 #include "utils.h"
 
 int main(int argc, char **argv) {
-  if (argc < 10) {
+  if (argc < 11) {
     std::cout << "Usage: " << argv[0]
               << " <data_type (float/int8/uint8)>  <data_file.bin>"
                  " <index_prefix_path> <R>  <L>  <PQ_bytes>  <M>  <T>"
-                 " <similarity metric (cosine/l2) case sensitive>."
+                 " <similarity metric (cosine/l2) case sensitive> <nbr_type (pq/rabitq)>."
                  " See README for more information on parameters."
               << std::endl;
   } else {
@@ -21,16 +23,33 @@ int main(int argc, char **argv) {
       std::cout << "Metric " << dist_metric << " is not supported. Using L2" << std::endl;
     }
 
+    std::string nbr_type = argv[10];
+
     if (std::string(argv[1]) == std::string("float")) {
-      auto nbr_handler = new pipeann::PQNeighbor<float>();
+      pipeann::AbstractNeighbor<float> *nbr_handler = nullptr;
+      if (nbr_type == "rabitq") {
+        nbr_handler = new pipeann::RaBitQNeighbor<float>();
+      } else {
+        nbr_handler = new pipeann::PQNeighbor<float>();
+      }
       pipeann::build_disk_index<float>(argv[2], argv[3], std::stoi(argv[4]), std::stoi(argv[5]), std::stoi(argv[7]),
                                        std::stoi(argv[8]), std::stoi(argv[6]), m, nullptr, nbr_handler);
     } else if (std::string(argv[1]) == std::string("int8")) {
-      auto nbr_handler = new pipeann::PQNeighbor<int8_t>();
+      pipeann::AbstractNeighbor<int8_t> *nbr_handler = nullptr;
+      if (nbr_type == "rabitq") {
+        nbr_handler = new pipeann::RaBitQNeighbor<int8_t>();
+      } else {
+        nbr_handler = new pipeann::PQNeighbor<int8_t>();
+      }
       pipeann::build_disk_index<int8_t>(argv[2], argv[3], std::stoi(argv[4]), std::stoi(argv[5]), std::stoi(argv[7]),
                                         std::stoi(argv[8]), std::stoi(argv[6]), m, nullptr, nbr_handler);
     } else if (std::string(argv[1]) == std::string("uint8")) {
-      auto nbr_handler = new pipeann::PQNeighbor<uint8_t>();
+      pipeann::AbstractNeighbor<uint8_t> *nbr_handler = nullptr;
+      if (nbr_type == "rabitq") {
+        nbr_handler = new pipeann::RaBitQNeighbor<uint8_t>();
+      } else {
+        nbr_handler = new pipeann::PQNeighbor<uint8_t>();
+      }
       pipeann::build_disk_index<uint8_t>(argv[2], argv[3], std::stoi(argv[4]), std::stoi(argv[5]), std::stoi(argv[7]),
                                          std::stoi(argv[8]), std::stoi(argv[6]), m, nullptr, nbr_handler);
     } else {

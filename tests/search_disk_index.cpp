@@ -7,6 +7,8 @@
 
 #include "utils/log.h"
 #include "nbr/abstract_nbr.h"
+#include "nbr/pq_nbr.h"
+#include "nbr/rabitq_nbr.h"
 #include "utils/timer.h"
 #include "utils.h"
 #include "aux_utils.h"
@@ -51,6 +53,7 @@ int search_disk_index(int argc, char **argv) {
   std::string truthset_bin(argv[index++]);
   uint64_t recall_at = std::atoi(argv[index++]);
   std::string dist_metric(argv[index++]);
+  std::string nbr_type = argv[index++];
   int search_mode = std::atoi(argv[index++]);
   bool use_page_search = search_mode != 0;
   uint32_t mem_L = std::atoi(argv[index++]);
@@ -93,7 +96,15 @@ int search_disk_index(int argc, char **argv) {
 
   std::shared_ptr<AlignedFileReader> reader = nullptr;
   reader.reset(new LinuxAlignedFileReader());
-  pipeann::AbstractNeighbor<T> *nbr_handler = new pipeann::PQNeighbor<T>();
+  pipeann::AbstractNeighbor<T> *nbr_handler = nullptr;
+  if (nbr_type == "pq") {
+    nbr_handler = new pipeann::PQNeighbor<T>();
+  } else if (nbr_type == "rabitq") {
+    nbr_handler = new pipeann::RaBitQNeighbor<T>();
+  } else {
+    std::cout << "Unknown nbr type: " << nbr_type << std::endl;
+    return -1;
+  }
   std::unique_ptr<pipeann::SSDIndex<T>> _pFlashIndex(new pipeann::SSDIndex<T>(m, reader, nbr_handler, tags_flag));
 
   int res = _pFlashIndex->load(index_prefix_path.c_str(), num_threads, true, use_page_search);
@@ -248,7 +259,7 @@ int main(int argc, char **argv) {
               << " <index_type (float/int8/uint8)>  <index_prefix_path>"
                  " <num_threads>  <pipeline width> "
                  " <query_file.bin>  <truthset.bin (use \"null\" for none)> "
-                 " <K> <similarity (cosine/l2)> "
+                 " <K> <similarity (cosine/l2)> <nbr_type (pq/rabitq)>"
                  " <search_mode(0 for beam search / 1 for page search / 2 for pipe search)> <mem_L (0 means not "
                  "using mem index)> <L1> [L2] etc."
               << std::endl;

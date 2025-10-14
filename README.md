@@ -23,6 +23,12 @@ PipeANN is suitable for both **large-scale** and **memory-constraint** scenarios
 Recall@10 = 0.99. Index is stored in a single Samsung PM9A3 (3.84TB) SSD.
 We use 128B PQ-compressed vector for 768-dimensional Wiki, and 32B PQ-compressed vector for SIFT and SPACEV. `NO_MAPPING` is disabled.
 
+## Updates
+
+* **Oct 14, 2025**: [RaBitQ](https://github.com/VectorDB-NTU/RaBitQ-Library) (1-bit-per-dimension quantization) is supported.
+* **Sep 29, 2025**: Python interface is supported. 
+* **Jul 16, 2025**: Vector update (insert and delete) is supported.
+
 ## Prerequisites
 
 ### Basic Configurations
@@ -44,7 +50,7 @@ We use 128B PQ-compressed vector for 768-dimensional Wiki, and 32B PQ-compressed
 For `Ubuntu >= 22.04`, the command to install them:
 
 ```bash
-sudo apt install make cmake g++ libaio-dev libgoogle-perftools-dev clang-format libmkl-full-dev
+sudo apt install make cmake g++ libaio-dev libgoogle-perftools-dev clang-format libmkl-full-dev libeigen3-dev
 pip3 install "pybind11[global]" # for Python interface.
 ```
 
@@ -178,8 +184,8 @@ build/tests/utils/gen_random_slice uint8 ${DATA_PATH} ${INDEX_PREFIX}_SAMPLE_RAT
 build/tests/build_memory_index uint8 ${INDEX_PREFIX}_SAMPLE_RATE_0.01_data.bin ${INDEX_PREFIX}_SAMPLE_RATE_0.01_ids.bin ${INDEX_PREFIX}_mem.index 0 0 32 64 1.2 24 l2
 
 # Search the on-disk index. Modify the query and ground_truth path beforehand.
-# build/tests/search_disk_index <data_type> <index_prefix> <nthreads> <I/O pipeline width (max for PipeANN)> <query file> <truth file> <top-K> <similarity> <search_mode (2 for PipeANN)> <L of in-memory index> <Ls for on-disk index> 
-build/tests/search_disk_index uint8 ${INDEX_PREFIX} 1 32 /mnt/nvme/data/bigann/bigann_query.bbin /mnt/nvme/data/bigann/100M_gt.bin 10 l2 2 10 10 20 30 40
+# build/tests/search_disk_index <data_type> <index_prefix> <nthreads> <I/O pipeline width (max for PipeANN)> <query file> <truth file> <top-K> <similarity> <nbr_type(pq/rabitq)> <search_mode (2 for PipeANN)> <L of in-memory index> <Ls for on-disk index> 
+build/tests/search_disk_index uint8 ${INDEX_PREFIX} 1 32 /mnt/nvme/data/bigann/bigann_query.bbin /mnt/nvme/data/bigann/100M_gt.bin 10 l2 pq 2 10 10 20 30 40
 ```
 
 Then, you should see results like this:
@@ -276,8 +282,8 @@ PipeANN uses the same on-disk index as DiskANN.
 
 ```bash
 # Usage:
-# build/tests/build_disk_index <data_type (float/int8/uint8)> <data_file.bin> <index_prefix_path> <R>  <L>  <PQ_bytes>  <M>  <T> <similarity metric (cosine/l2) case sensitive>. <single_file_index (0/1)>
-build/tests/build_disk_index uint8 /mnt/nvme/data/bigann/100M.bbin /mnt/nvme2/indices/bigann/100m 96 128 32 256 112 l2 0
+# build/tests/build_disk_index <data_type (float/int8/uint8)> <data_file.bin> <index_prefix_path> <R>  <L>  <bytes_per_nbr>  <M>  <T> <similarity metric (cosine/l2) case sensitive>. <nbr_type (pq/rabitq)>
+build/tests/build_disk_index uint8 /mnt/nvme/data/bigann/100M.bbin /mnt/nvme2/indices/bigann/100m 96 128 32 256 112 l2 pq
 ```
 
 The final index files will share a prefix of `/mnt/nvme2/indices/bigann/100m`.
@@ -286,9 +292,12 @@ Parameter explanation:
 
 * R: maximum out-neighbors
 * L: candidate pool size during build (build in fact conducts vector searches to optimize graph edges)
-* PQ_bytes: Bytes per PQ vector. We use 32 bytes for the three datasets; higher-dimensional vectors might require more bytes.
+* bytes_per_nbr: Bytes per in-memory neighbor. We use 32 bytes for the three datasets; higher-dimensional vectors might require more bytes.
 * M: maximum memory used during build, 256GB is sufficient for the 100M index to be built totally in memory.
 * T: number of threads used during build. Our machine has 112 threads.
+* nbr_type: PQ (`pq`) and RaBitQ (`rabitq`) are supported. We recommend using PQ in most cases.
+  * PQ uses `bytes_per_nbr` bytes for each vector. It supports both vector search and update.
+  * RaBitQ uses 1 bit per vector dimension (plus 9 byte metadata). Its quantization speed is faster than PQ, while its performance could be better or worse than PQ. Vector search is supported; update is not supported.
 
 We use the following parameters when building indexes:
 
