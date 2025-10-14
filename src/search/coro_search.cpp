@@ -32,12 +32,12 @@ namespace pipeann {
     static constexpr int kMaxVectorDim = 512;
     struct alignas(SECTOR_LEN) CoroDataOne {
       // buffer.
-      QueryBuffer<T> query_buf;
-      char sectors[SECTOR_LEN * 128];
+      char sectors[SECTOR_LEN * 128];  // align to SECTOR_LEN.
       T query[kMaxVectorDim];
       T data_buf[ROUND_UP(kMaxVectorDim, 256)];
       uint64_t sector_idx;
 
+      QueryBuffer<T> query_buf;
       // search state.
       std::vector<Neighbor> full_retset;
       std::vector<Neighbor> retset;

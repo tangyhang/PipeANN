@@ -405,12 +405,13 @@ void LinuxAlignedFileReader::send_io(std::vector<IORequest> &reqs, void *ctx, bo
   std::vector<iocb_t *> cbs(n_ops, nullptr);
   std::vector<struct iocb> cb(n_ops);
   for (uint64_t j = 0; j < n_ops; j++) {
+    reqs[j].finished = false;  // reset finished flag
     if (write) {
       io_prep_pwrite(cb.data() + j, this->file_desc, reqs[j].buf, reqs[j].len, reqs[j].offset);
     } else {
       io_prep_pread(cb.data() + j, this->file_desc, reqs[j].buf, reqs[j].len, reqs[j].offset);
     }
-    reqs[j].finished = false;  // reset finished flag
+    cb.data = (void *) &reqs[j];  // set user data to point to the request
   }
 
   for (uint64_t i = 0; i < n_ops; i++) {
